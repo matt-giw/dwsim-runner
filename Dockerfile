@@ -19,8 +19,15 @@ RUN dotnet publish src/DwsimRunner.Api    -c Release -o /out/api && \
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libfontconfig1 libgdiplus libc6-dev \
+        libfontconfig1 libgdiplus libc6-dev curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Non-root: the API + spawned worker processes never need root. DWSIM writes
+# temp files to the OS temp dir, so chown that for the runner user.
+RUN useradd --system --uid 10001 --create-home --home-dir /home/runner runner \
+    && mkdir -p /tmp/dwsim \
+    && chown -R runner:runner /tmp/dwsim
+ENV TMPDIR=/tmp/dwsim
 
 COPY --from=build /opt/dwsim /opt/dwsim
 COPY --from=build /out/api    /app/api
@@ -32,8 +39,12 @@ ENV DWSIM_PATH=/opt/dwsim \
     WORKER_PATH=/app/worker/DwsimRunner.Worker.dll \
     LD_LIBRARY_PATH=/opt/dwsim \
     SOLVE_TIMEOUT_SECONDS=60 \
-    MAX_CONCURRENT_SOLVES=4
+    MAX_CONCURRENT_SOLVES=6
 
 EXPOSE 8080
 WORKDIR /app/api
+USER runner
+# /health stays open even when RUNNER_API_KEY is set, so the orchestrator probe works.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -sf http://localhost:8080/health || exit 1
 ENTRYPOINT ["dotnet", "DwsimRunner.Api.dll"]

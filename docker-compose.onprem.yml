@@ -11,7 +11,7 @@ services:
     ports: ["8080:8080"]
     environment:
       SOLVE_TIMEOUT_SECONDS: "60"
-      MAX_CONCURRENT_SOLVES: "2"
+      MAX_CONCURRENT_SOLVES: "6"   # SC-006 target; tune per customer host
     volumes:
       - ${CUSTOMER_DWSIM:?set CUSTOMER_DWSIM to the local DWSIM install dir}:/opt/dwsim:ro
       - ./templates:/templates:ro

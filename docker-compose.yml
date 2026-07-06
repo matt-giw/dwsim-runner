@@ -8,7 +8,10 @@ services:
     ports: ["8080:8080"]
     environment:
       SOLVE_TIMEOUT_SECONDS: "60"
-      MAX_CONCURRENT_SOLVES: "4"
+      MAX_CONCURRENT_SOLVES: "6"
+      # Optional shared API key (FR-016). Set to require X-Api-Key on all
+      # routes except GET /health. Unset = open (local dev).
+      RUNNER_API_KEY: "${RUNNER_API_KEY:-}"
     volumes:
       - ./templates:/templates:ro
     deploy:

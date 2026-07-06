@@ -1,0 +1,57 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{75B01E85-0B18-4133-9266-28BA4E6B9639}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DwsimRunner.Api", "src\DwsimRunner.Api\DwsimRunner.Api.csproj", "{0E3C440A-1047-4FA8-8C59-1AC1C5EE4A1B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DwsimRunner.Worker", "src\DwsimRunner.Worker\DwsimRunner.Worker.csproj", "{BA3686B1-1448-4864-872E-A2D4637A5392}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{FD1A75FA-0643-4A85-B293-22D657DCFB94}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DwsimRunner.Api.Tests", "tests\DwsimRunner.Api.Tests\DwsimRunner.Api.Tests.csproj", "{FF3BCF0D-8150-4DDE-9041-ACE4866867E9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DwsimRunner.Integration.Tests", "tests\DwsimRunner.Integration.Tests\DwsimRunner.Integration.Tests.csproj", "{81A1A4B3-9027-4E23-9041-062B7A33D89A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FakeWorker", "tests\FakeWorker\FakeWorker.csproj", "{F2876770-30FC-4ECE-84F6-BF98BA6B25A0}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0E3C440A-1047-4FA8-8C59-1AC1C5EE4A1B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0E3C440A-1047-4FA8-8C59-1AC1C5EE4A1B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0E3C440A-1047-4FA8-8C59-1AC1C5EE4A1B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0E3C440A-1047-4FA8-8C59-1AC1C5EE4A1B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BA3686B1-1448-4864-872E-A2D4637A5392}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BA3686B1-1448-4864-872E-A2D4637A5392}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BA3686B1-1448-4864-872E-A2D4637A5392}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BA3686B1-1448-4864-872E-A2D4637A5392}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FF3BCF0D-8150-4DDE-9041-ACE4866867E9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FF3BCF0D-8150-4DDE-9041-ACE4866867E9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FF3BCF0D-8150-4DDE-9041-ACE4866867E9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FF3BCF0D-8150-4DDE-9041-ACE4866867E9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{81A1A4B3-9027-4E23-9041-062B7A33D89A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{81A1A4B3-9027-4E23-9041-062B7A33D89A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{81A1A4B3-9027-4E23-9041-062B7A33D89A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{81A1A4B3-9027-4E23-9041-062B7A33D89A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F2876770-30FC-4ECE-84F6-BF98BA6B25A0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F2876770-30FC-4ECE-84F6-BF98BA6B25A0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F2876770-30FC-4ECE-84F6-BF98BA6B25A0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F2876770-30FC-4ECE-84F6-BF98BA6B25A0}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{0E3C440A-1047-4FA8-8C59-1AC1C5EE4A1B} = {75B01E85-0B18-4133-9266-28BA4E6B9639}
+		{BA3686B1-1448-4864-872E-A2D4637A5392} = {75B01E85-0B18-4133-9266-28BA4E6B9639}
+		{FF3BCF0D-8150-4DDE-9041-ACE4866867E9} = {FD1A75FA-0643-4A85-B293-22D657DCFB94}
+		{81A1A4B3-9027-4E23-9041-062B7A33D89A} = {FD1A75FA-0643-4A85-B293-22D657DCFB94}
+		{F2876770-30FC-4ECE-84F6-BF98BA6B25A0} = {FD1A75FA-0643-4A85-B293-22D657DCFB94}
+	EndGlobalSection
+EndGlobal

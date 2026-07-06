@@ -1,0 +1,51 @@
+# dwsim-runner CI (GPL-3.0)
+#
+# Tier A tests (DwsimRunner.Api.Tests) run with NO DWSIM on the host: they use
+# the FakeWorker stub for the process boundary, so they're CI-safe and fast.
+# The real DWSIM-gated Tier B suite self-skips unless SIM_RUNNER_URL points at
+# a running runner with DWSIM, so it is not run here.
+#
+# The Worker project references DWSIM assemblies at compile time (Private=false)
+# and is therefore NOT built in CI — that's intentional. We build the Api and
+# FakeWorker only, run Tier A, and assert the Api publish output contains zero
+# DWSIM.* DLLs (Constitution IV: no conveyance).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: Build (Tier A) + no-conveyance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore tests/DwsimRunner.Api.Tests/DwsimRunner.Api.Tests.csproj
+
+      - name: Build Tier A projects (Api + FakeWorker; Worker needs DWSIM, built in Docker)
+        run: dotnet build tests/DwsimRunner.Api.Tests/DwsimRunner.Api.Tests.csproj --no-restore -c Release
+
+      - name: Publish Api to a clean directory (no DWSIM_PATH set → Worker skipped, refs unresolved)
+        run: dotnet publish src/DwsimRunner.Api -c Release -o publish/api --no-restore
+
+      - name: Run Tier A tests (FakeWorker — no DWSIM required)
+        run: dotnet test tests/DwsimRunner.Api.Tests/DwsimRunner.Api.Tests.csproj --no-restore -c Release --nologo
+
+      - name: Assert no DWSIM.* DLLs in Api publish output (Constitution IV)
+        run: |
+          set -e
+          leaks=$(find publish/api -iname 'DWSIM.*' -type f -print || true)
+          if [ -n "$leaks" ]; then
+            echo "::error::DWSIM binaries leaked into publish output (no-conveyance violation):"
+            echo "$leaks"
+            exit 1
+          fi
+          echo "publish/api is clean of DWSIM.* — no-conveyance OK"
