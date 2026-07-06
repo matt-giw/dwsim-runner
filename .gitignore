@@ -1,0 +1,12 @@
+# DWSIM release binaries — fetched by scripts/fetch-dwsim.sh, NEVER committed
+# or redistributed (constitution: no conveyance of DWSIM binaries).
+dwsim/
+
+# .NET build output
+bin/
+obj/
+publish/
+*.user
+
+# OS noise
+.DS_Store

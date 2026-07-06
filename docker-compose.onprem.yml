@@ -1,0 +1,17 @@
+# On-prem mode — customer installs DWSIM themselves and mounts it.
+# We never ship DWSIM binaries.
+#
+#   export CUSTOMER_DWSIM=/usr/local/lib/dwsim   # their install
+#   docker compose -f docker-compose.onprem.yml up
+services:
+  dwsim-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.onprem
+    ports: ["8080:8080"]
+    environment:
+      SOLVE_TIMEOUT_SECONDS: "60"
+      MAX_CONCURRENT_SOLVES: "2"
+    volumes:
+      - ${CUSTOMER_DWSIM:?set CUSTOMER_DWSIM to the local DWSIM install dir}:/opt/dwsim:ro
+      - ./templates:/templates:ro

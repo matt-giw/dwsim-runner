@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- DWSIM assemblies resolved from an existing install at build time.
+       Private=false → NOT copied to output, NOT shipped by us.
+       At runtime DwsimResolver.cs loads them from DWSIM_PATH.
+       This single build works for both SaaS (bundled in container) and
+       on-prem (customer's own DWSIM install). -->
+  <PropertyGroup>
+    <DwsimPath>$(DWSIM_PATH)</DwsimPath>
+    <DwsimPath Condition="'$(DwsimPath)' == ''">/opt/dwsim</DwsimPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="DWSIM.Automation">
+      <HintPath>$(DwsimPath)/DWSIM.Automation.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DWSIM.Interfaces">
+      <HintPath>$(DwsimPath)/DWSIM.Interfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DWSIM.GlobalSettings">
+      <HintPath>$(DwsimPath)/DWSIM.GlobalSettings.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DWSIM.SharedClasses">
+      <HintPath>$(DwsimPath)/DWSIM.SharedClasses.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DWSIM.Thermodynamics">
+      <HintPath>$(DwsimPath)/DWSIM.Thermodynamics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DWSIM.UnitOperations">
+      <HintPath>$(DwsimPath)/DWSIM.UnitOperations.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

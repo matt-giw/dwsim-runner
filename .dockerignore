@@ -1,0 +1,7 @@
+.git
+publish/
+**/bin/
+**/obj/
+scripts/
+*.md
+.DS_Store

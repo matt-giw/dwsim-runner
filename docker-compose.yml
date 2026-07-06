@@ -1,0 +1,17 @@
+# SaaS / dev mode — DWSIM bundled in the image (see Dockerfile)
+services:
+  dwsim-runner:
+    build: .
+    # DWSIM's Linux release ships amd64-only native libs; on Apple Silicon
+    # this builds/runs under Rosetta emulation.
+    platform: linux/amd64
+    ports: ["8080:8080"]
+    environment:
+      SOLVE_TIMEOUT_SECONDS: "60"
+      MAX_CONCURRENT_SOLVES: "4"
+    volumes:
+      - ./templates:/templates:ro
+    deploy:
+      resources:
+        limits:
+          memory: 8g   # ~1–2 GB per concurrent worker + headroom

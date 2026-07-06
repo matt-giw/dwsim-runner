@@ -1,0 +1,41 @@
+# dwsim-runner — on-prem image (GPL-3.0)
+# Contains ONLY our GPL wrapper. DWSIM is NOT included: the customer installs
+# DWSIM themselves and mounts it at /opt/dwsim. You therefore never convey
+# DWSIM binaries — only this wrapper (source available) and the iskra app.
+#
+# Build note: compiling the Worker requires DWSIM assemblies present at build
+# time (reference-only, Private=false). Build with the SDK stage pointing at
+# your dev copy — those DLLs are used for compilation metadata only and are
+# NOT copied into the publish output or this image.
+
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+COPY dwsim/ /opt/dwsim/
+ENV DWSIM_PATH=/opt/dwsim
+COPY src/ ./src/
+RUN dotnet publish src/DwsimRunner.Api    -c Release -o /out/api && \
+    dotnet publish src/DwsimRunner.Worker -c Release -o /out/worker && \
+    # belt & braces: assert no DWSIM DLLs leaked into publish output
+    ! ls /out/api /out/worker | grep -qi '^DWSIM\.'
+
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libfontconfig1 libgdiplus libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/api    /app/api
+COPY --from=build /out/worker /app/worker
+
+# Customer mounts:
+#   -v /path/to/their/dwsim:/opt/dwsim:ro
+#   -v /path/to/templates:/templates:ro
+ENV DWSIM_PATH=/opt/dwsim \
+    TEMPLATES_PATH=/templates \
+    WORKER_PATH=/app/worker/DwsimRunner.Worker.dll \
+    LD_LIBRARY_PATH=/opt/dwsim \
+    SOLVE_TIMEOUT_SECONDS=60 \
+    MAX_CONCURRENT_SOLVES=4
+
+EXPOSE 8080
+WORKDIR /app/api
+ENTRYPOINT ["dotnet", "DwsimRunner.Api.dll"]
