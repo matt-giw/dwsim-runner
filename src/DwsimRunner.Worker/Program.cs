@@ -1,20 +1,20 @@
 // dwsim-runner Worker — GPL-3.0
-// One solve per process. argv[0] = path to a job JSON file:
-//   { "template": "/templates/pem-ref-plant.dwxmz",
-//     "overrides": [ { "object": "feed water", "property": "massflow", "value": 98041, "unit": "kg/h" } ] }
-// Prints exactly one JSON document to stdout and exits with a typed code
-// (data-model.md error taxonomy):
-//   0 = solved (convergence flag is in the payload)
-//   2 = invalid input  → { error: INVALID_OBJECT | INVALID_PROPERTY, message, detail }
+// One job per process. argv[0] = path to a job JSON file. The mode field
+// selects a handler; each prints exactly one JSON document to stdout and
+// exits with a typed code (data-model.md error taxonomy):
+//   0 = success (converged flag is in the payload for solve/build-solve)
+//   2 = invalid input  → { error, message, detail? }
 //   3 = template load failed
+//   4 = build failed / unknown compound (issues attached)
+//   5 = render failed (pfd)
 //   1 = unexpected crash (full detail on stderr only)
-// The API process owns timeouts.
+// The API process owns timeouts and exit-code → HTTP mapping.
 
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DwsimRunner.Worker;
 
-DwsimResolver.Install();   // MUST run before Solver is touched
+DwsimResolver.Install();   // MUST run before any DWSIM-typed code is JIT'd
 
 var job = JsonSerializer.Deserialize<Job>(
     File.ReadAllText(args[0]),
@@ -30,11 +30,16 @@ object payload;
 int exitCode = 0;
 try
 {
-    // Solver lives in a separate class so its DWSIM-typed code isn't JIT'd
-    // until the resolver hook is installed.
-    payload = string.Equals(job.Mode, "inspect", StringComparison.OrdinalIgnoreCase)
-        ? Solver.Inspect(job)
-        : Solver.Run(job);
+    payload = (job.Mode?.ToLowerInvariant()) switch
+    {
+        "inspect"      => Solver.Inspect(job),
+        "catalog"      => Modes.Catalog(job),
+        "validate"     => Modes.Validate(job),
+        "build-solve"  => Modes.BuildSolve(job),
+        "flash"        => Modes.Flash(job),
+        "pfd"          => Modes.Pfd(job),
+        _              => Solver.Run(job),   // "solve" (default for spec-001 back-compat)
+    };
 }
 catch (WorkerInputException ex)
 {
@@ -45,6 +50,17 @@ catch (TemplateLoadException ex)
 {
     exitCode = 3;
     payload = new ErrorDoc("TEMPLATE_LOAD_FAILED", ex.Message, null);
+}
+catch (BuildAbortException ex)
+{
+    exitCode = 4;
+    payload = new BuildErrorDoc(
+        ex.Code, ex.Message, ex.Issues.Select(i => new IssueOut(i.Severity, i.Code, i.Tag, i.Path, i.Message)).ToList());
+}
+catch (RenderFailedException ex)
+{
+    exitCode = 5;
+    payload = new ErrorDoc("RENDER_FAILED", ex.Message, null);
 }
 catch (Exception ex)
 {
@@ -64,10 +80,25 @@ Console.WriteLine(JsonSerializer.Serialize(payload, payload.GetType(), new JsonS
 }));
 return exitCode;
 
-record Job(string Template, List<Override>? Overrides, string? Mode);
+// ── job DTO ─────────────────────────────────────────────────────────────────
+// Extended for 002 modes: documents, flash specs, template save targets.
+// The 001 fields (template, overrides, mode) stay first for back-compat with
+// the existing /solve and /inspect API code paths.
+record Job(
+    string? Template,
+    List<Override>? Overrides,
+    string? Mode,
+    JsonElement? Document,
+    JsonElement? Flash,
+    SaveAsTemplate? SaveAsTemplate,
+    string? SavePath);
+
 record Override(string Object, string Property, double Value, string? Unit);
+record SaveAsTemplate(string Id, bool Overwrite);
 
 record ErrorDoc(string Error, string Message, string? Detail);
+record BuildErrorDoc(string Error, string Message, List<IssueOut> Issues);
+record IssueOut(string Severity, string Code, string? Tag, string? Path, string Message);
 
 record StreamRow(string Name, string? Phase, double? TemperatureC, double? PressureBar,
                  double? MassFlowKgH, double? MolarFlowKmolH, Dictionary<string, double>? CompositionMol);
@@ -87,6 +118,7 @@ class WorkerInputException(string code, string message, string? detail = null) :
 }
 
 class TemplateLoadException(string message) : Exception(message);
+class RenderFailedException(string message) : Exception(message);
 
 static class Solver
 {
@@ -130,7 +162,7 @@ static class Solver
     /// <summary>Flowsheet load without solving: object inventory (FR-014).</summary>
     public static InventoryResult Inspect(Job job)
     {
-        var (_, fs) = Load(job.Template);
+        var (_, fs) = Load(job.Template ?? throw new WorkerInputException("INVALID_REQUEST", "template is required for inspect mode"));
         var objects = fs.SimulationObjects.Values
             .Select(o => new ObjectInfo(
                 Tag: o.GraphicObject.Tag,
@@ -161,7 +193,7 @@ static class Solver
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var warnings = new List<string>();
 
-        var (auto, fs) = Load(job.Template);
+        var (auto, fs) = Load(job.Template ?? throw new WorkerInputException("INVALID_REQUEST", "template is required for solve mode"));
 
         string AvailableTags() =>
             "available: " + string.Join(", ",

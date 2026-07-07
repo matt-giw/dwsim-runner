@@ -44,7 +44,7 @@ public class ObjectsAndUnitOpsTests
         var resp = await host.Client.GetAsync("/templates/..%2Fescape/objects");
         Assert.True(resp.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.NotFound,
             $"got {(int)resp.StatusCode}");
-        Assert.Empty(host.StartMarkers());
+        Assert.Single(host.StartMarkers()); // only the pre-warmed catalog worker
     }
 
     [Fact]
@@ -57,7 +57,7 @@ public class ObjectsAndUnitOpsTests
         var b2 = await host.Client.GetStringAsync("/templates/t/objects");
 
         Assert.Equal(b1, b2);
-        Assert.Single(host.StartMarkers()); // second call served from cache
+        Assert.Equal(2, host.StartMarkers().Length); // pre-warmed catalog + first inventory (second from cache)
     }
 
     [Fact]

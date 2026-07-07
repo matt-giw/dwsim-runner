@@ -52,7 +52,8 @@ public class HealthContractTests
     [Fact]
     public async Task Templates_endpoint_returns_empty_list_for_missing_dir()
     {
-        using var host = new RunnerHost(new() { ["TEMPLATES_PATH"] = "/nonexistent-templates-dir" });
+        var missingDir = Path.Combine(Path.GetTempPath(), "nonexistent-templates-dir-" + Guid.NewGuid());
+        using var host = new RunnerHost(new() { ["TEMPLATES_PATH"] = missingDir });
         var ids = await host.Client.GetFromJsonAsync<string[]>("/templates");
         Assert.Empty(ids!);
     }

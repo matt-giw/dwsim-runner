@@ -8,6 +8,7 @@ using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DwsimRunner.Api;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.ConfigureHttpJsonOptions(o =>
@@ -30,6 +31,20 @@ var gate  = new SemaphoreSlim(maxConcurrent);
 var cache = new ResultCache(cacheSize);
 int maxAdmitted = maxConcurrent * 5;   // running + queued (queue cap = 4×concurrency)
 int admitted = 0;
+
+// Engine catalog (FR-CAT-001..004): fetched once per engine version via the
+// worker's `catalog` mode, then served from memory.
+var catalogLock = new SemaphoreSlim(1, 1);
+string? catalogVersionKey = null;
+string? catalogJson = null;
+CatalogModel? catalogModel = null;   // parsed view used by DocumentValidator (port/parameter map)
+
+// USER_TEMPLATES_PATH (T001): where build-solve saves flowsheets; the store
+// rebuilds the directory if missing. The same dir hosts the .doc.json
+// provenance sidecars per data-model.md.
+string userTemplatesPath = Path.GetFullPath(Cfg("USER_TEMPLATES_PATH", Path.Combine(templatesPath, "user")));
+var userTemplates = new UserTemplateStore(userTemplatesPath, templatesPath);
+userTemplates.EnsureDirectory();
 
 var templateIdPattern = new Regex("^[A-Za-z0-9._-]+$", RegexOptions.Compiled);
 
@@ -114,6 +129,300 @@ string?[] ListTemplateIds() =>
         : [];
 
 app.MapGet("/templates", () => Results.Ok(ListTemplateIds()));
+
+// ── engine catalog (002: FR-CAT-001..004) ──────────────────────────────────
+
+app.MapGet("/catalog/compounds", (CancellationToken ct) => CatalogSection("compounds", ct));
+app.MapGet("/catalog/property-packages", (CancellationToken ct) => CatalogSection("propertyPackages", ct));
+app.MapGet("/catalog/unit-op-types", (CancellationToken ct) => CatalogSection("unitOpTypes", ct));
+
+async Task<IResult> CatalogSection(string section, CancellationToken ct)
+{
+    var (status, fullCatalog) = await GetCatalogAsync(ct);
+    if (status != StatusCodes.Status200OK)
+        return Results.Content(fullCatalog, "application/json", statusCode: status);
+
+    using var doc = JsonDocument.Parse(fullCatalog);
+    using var buffer = new MemoryStream();
+    using (var w = new System.Text.Json.Utf8JsonWriter(buffer))
+    {
+        w.WriteStartObject();
+        w.WritePropertyName("engineVersion");
+        if (doc.RootElement.TryGetProperty("engineVersion", out var ev)) ev.WriteTo(w);
+        else w.WriteNullValue();
+        w.WritePropertyName(section);
+        if (doc.RootElement.TryGetProperty(section, out var sec)) sec.WriteTo(w);
+        else { w.WriteStartArray(); w.WriteEndArray(); }
+        w.WriteEndObject();
+    }
+    return Results.Content(System.Text.Encoding.UTF8.GetString(buffer.ToArray()), "application/json");
+}
+
+async Task<(int Status, string Body)> GetCatalogAsync(CancellationToken ct)
+{
+    var (_, probedVersion, _) = ProbeDwsim();
+    var versionKey = probedVersion ?? "unknown";
+    if (catalogJson is not null && catalogVersionKey == versionKey)
+        return (StatusCodes.Status200OK, catalogJson);
+
+    await catalogLock.WaitAsync(ct);
+    try
+    {
+        if (catalogJson is not null && catalogVersionKey == versionKey)
+            return (StatusCodes.Status200OK, catalogJson);
+
+        var run = await SpawnWorkerAsync(new { mode = "catalog" }, TimeSpan.FromSeconds(defaultTimeout), ct, gated: true);
+        if (run.ExitCode != 0)
+        {
+            app.Logger.LogWarning("catalog fetch failed (exit {Code}): {Stderr}", run.ExitCode, run.Stderr);
+            return (StatusCodes.Status503ServiceUnavailable,
+                ErrorBody("ENGINE_UNAVAILABLE",
+                    "the simulation engine is unavailable — the catalog cannot be served; check /health"));
+        }
+        try
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(run.Stdout)!;
+            catalogJson = node.ToJsonString();
+            catalogVersionKey = versionKey;
+            try { catalogModel = CatalogModel.Parse(catalogJson); }
+            catch { catalogModel = null; }   // structural validation best-effort; degrades gracefully
+            return (StatusCodes.Status200OK, catalogJson);
+        }
+        catch (JsonException)
+        {
+            return (StatusCodes.Status503ServiceUnavailable,
+                ErrorBody("ENGINE_UNAVAILABLE", "catalog worker returned an invalid response"));
+        }
+    }
+    finally
+    {
+        catalogLock.Release();
+    }
+}
+
+// ── flowsheet pipelines (002: validate + build-solve) ─────────────────────
+// Structural validation runs in-process against the cached catalog; semantic
+// validation and build-solve go through the worker (gated + cached per FR-VAL-002,
+// FR-BUILD-001..005). Structural issues short-circuit semantic — a structurally
+// invalid document is never sent to the engine. Both routes spawn the worker
+// only when their document passes structural checks.
+
+async Task<CatalogModel> GetCatalogModelAsync(CancellationToken ct)
+{
+    if (catalogModel is not null) return catalogModel;
+    var (status, body) = await GetCatalogAsync(ct);
+    if (status != StatusCodes.Status200OK)
+        throw new InvalidOperationException($"catalog unavailable: HTTP {status}");
+    return catalogModel ?? throw new InvalidOperationException("catalog parsed but the model is empty");
+}
+
+app.MapPost("/flowsheets/validate", async (HttpContext http, CancellationToken ct) =>
+{
+    // Body shape: { document, semantic: true }
+    JsonElement requestBody;
+    try
+    {
+        using var j = await JsonDocument.ParseAsync(http.Request.Body);
+        requestBody = j.RootElement.Clone();
+    }
+    catch (JsonException)
+    {
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "request body must be JSON");
+    }
+    if (!requestBody.TryGetProperty("document", out var documentEl) || documentEl.ValueKind != JsonValueKind.Object)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "document is required and must be a JSON object");
+
+    var semantic = requestBody.TryGetProperty("semantic", out var semEl) && semEl.ValueKind == JsonValueKind.False ? false : true;
+
+    // Structural validation against the catalog (collect-all). If the catalog
+    // engine is unavailable we still run the structural checks that don't need
+    // it (schema version, duplicate tags, units) — failure to fetch is silent.
+    CatalogModel model;
+    try { model = await GetCatalogModelAsync(ct); }
+    catch { model = new CatalogModel(); }
+
+    var structuralIssues = DocumentValidator.ValidateStructural(documentEl, model);
+    if (structuralIssues.Any(i => i.Severity == "error"))
+    {
+        var issuesOut = structuralIssues.Select(i => new
+        {
+            severity = i.Severity, code = i.Code, tag = i.Tag, path = i.Path, message = i.Message
+        });
+        return Results.Content(
+            JsonSerializer.Serialize(new { valid = false, issues = issuesOut }, Program.JsonOpts),
+            "application/json", statusCode: StatusCodes.Status200OK);
+    }
+
+    if (!semantic)
+    {
+        // Structural-only pass stops here; no worker spawn, no queue slot.
+        return Results.Content(
+            JsonSerializer.Serialize(new { valid = true, issues = Array.Empty<object>() }, Program.JsonOpts),
+            "application/json");
+    }
+
+    // Semantic validation → worker `validate` mode. Honors the same admission
+    // control as solve so heavy co-pilot bursts can't starve build-solve.
+    var outcome = await RunDocumentModeAsync(documentEl, "validate", TimeSpan.FromSeconds(defaultTimeout), null, ct);
+    http.Response.StatusCode = outcome.Status;
+    if (outcome.Status == StatusCodes.Status429TooManyRequests) http.Response.Headers.RetryAfter = "5";
+    return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
+});
+
+app.MapPost("/flowsheets/build-solve", async (HttpContext http, CancellationToken ct) =>
+{
+    JsonElement requestBody;
+    try
+    {
+        using var j = await JsonDocument.ParseAsync(http.Request.Body);
+        requestBody = j.RootElement.Clone();
+    }
+    catch (JsonException)
+    {
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "request body must be JSON");
+    }
+    if (!requestBody.TryGetProperty("document", out var documentEl) || documentEl.ValueKind != JsonValueKind.Object)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "document is required and must be a JSON object");
+
+    var timeoutSeconds = requestBody.TryGetProperty("timeoutSeconds", out var toEl) && toEl.ValueKind == JsonValueKind.Number
+        ? Math.Clamp((int)toEl.GetInt32(), 5, 600)
+        : 120;
+
+    string? savePath = null;
+    if (requestBody.TryGetProperty("saveAsTemplate", out var saveEl) && saveEl.ValueKind == JsonValueKind.Object
+        && saveEl.TryGetProperty("id", out var idEl) && idEl.GetString() is { Length: > 0 } saveId
+        && templateIdPattern.IsMatch(saveId))
+    {
+        savePath = Path.Combine(userTemplates.UserTemplatesPath, saveId + ".dwxmz");
+        var overwrite = saveEl.TryGetProperty("overwrite", out var ovEl) && ovEl.ValueKind == JsonValueKind.True;
+        if (File.Exists(savePath) && !overwrite)
+            return ErrorResult(StatusCodes.Status409Conflict, "TEMPLATE_NAME_CONFLICT",
+                $"a template named '{saveId}' already exists; pass overwrite:true to replace it");
+    }
+
+    // Structural validation must pass before the engine sees the document.
+    CatalogModel model;
+    try { model = await GetCatalogModelAsync(ct); }
+    catch { model = new CatalogModel(); }
+    var structuralIssues = DocumentValidator.ValidateStructural(documentEl, model);
+    if (structuralIssues.Any(i => i.Severity == "error"))
+    {
+        http.Response.StatusCode = StatusCodes.Status400BadRequest;
+        var issuesOut = structuralIssues.Select(i => new
+        {
+            severity = i.Severity, code = i.Code, tag = i.Tag, path = i.Path, message = i.Message
+        });
+        return Results.Json(new { error = "DOCUMENT_INVALID", issues = issuesOut }, statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    // Cache + queue + spawn for build-solve.
+    var cacheKey = ResultCache.KeyForDocument(documentEl, catalogVersionKey ?? "unknown");
+    if (cache.TryGet(cacheKey, out var cached))
+        return Results.Content(cached, "application/json");
+
+    var savePayload = savePath is null ? null
+        : new { id = Path.GetFileNameWithoutExtension(savePath),
+                overwrite = requestBody.TryGetProperty("saveAsTemplate", out var sv2) && sv2.ValueKind == JsonValueKind.Object
+                            && sv2.TryGetProperty("overwrite", out var ov) && ov.ValueKind == JsonValueKind.True };
+    var outcome = await RunDocumentModeAsync(documentEl, "build-solve", TimeSpan.FromSeconds(timeoutSeconds), savePath, ct);
+    if (outcome.Status == StatusCodes.Status429TooManyRequests)
+        http.Response.Headers.RetryAfter = "5";
+    if (outcome.Status == StatusCodes.Status200OK)
+        cache.Set(cacheKey, outcome.Body);
+    return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
+});
+
+// Document-mode worker spawn: writes {mode, document, saveAsTemplate?, savePath?}
+// and maps exit codes (reusing the same concurrency gate + admission control as /solve).
+// Worker payload shapes mirror the FakeWorker's expectations.
+async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, TimeSpan timeout, string? savePath, CancellationToken ct)
+{
+    var solveId = Guid.NewGuid().ToString("N")[..8];
+    var clock = Stopwatch.StartNew();
+    void LogOutcome(string outcome, bool cacheHit = false) => app.Logger.LogInformation(
+        "docmode {SolveId}: mode={Mode} outcome={Outcome} cacheHit={CacheHit} elapsedMs={ElapsedMs}",
+        solveId, mode, outcome, cacheHit, clock.ElapsedMilliseconds);
+
+    if (Interlocked.Increment(ref admitted) > maxAdmitted)
+    {
+        Interlocked.Decrement(ref admitted);
+        LogOutcome("QUEUE_FULL");
+        return new(StatusCodes.Status429TooManyRequests,
+            ErrorBody("QUEUE_FULL", $"queue is full ({maxAdmitted} requests admitted); retry shortly"));
+    }
+
+    var jobFile = Path.Combine(Path.GetTempPath(), $"dwsim-job-{Guid.NewGuid():N}.json");
+    try
+    {
+        var job = new Dictionary<string, object?> { ["mode"] = mode, ["document"] = document };
+        if (savePath is not null) job["savePath"] = savePath;
+        await File.WriteAllTextAsync(jobFile, JsonSerializer.Serialize(job, Program.JsonOpts), ct);
+
+        await gate.WaitAsync(ct);
+        try
+        {
+            var psi = new ProcessStartInfo("dotnet", $"\"{workerDll}\" \"{jobFile}\"")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            psi.Environment["DWSIM_PATH"] = dwsimPath;
+            using var proc = Process.Start(psi)!;
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+            var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(timeout);
+            try { await proc.WaitForExitAsync(cts.Token); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                proc.Kill(entireProcessTree: true);
+                LogOutcome("SOLVE_TIMEOUT");
+                return new(StatusCodes.Status504GatewayTimeout,
+                    ErrorBody("SOLVE_TIMEOUT", $"solve timed out after {timeout.TotalSeconds}s"));
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            if (proc.ExitCode != 0)
+                app.Logger.LogWarning("docmode {SolveId} worker exit {Code}, stderr: {Stderr}",
+                    solveId, proc.ExitCode, stderr);
+
+            switch (proc.ExitCode)
+            {
+                case 0:
+                    LogOutcome("ok");
+                    return new(StatusCodes.Status200OK, MinifyOrPassThrough(stdout, "WORKER_CRASH", "worker returned an invalid response"));
+                case 4:
+                    LogOutcome("BUILD_FAILED");
+                    return new(StatusCodes.Status422UnprocessableEntity,
+                        WorkerErrorOrDefault(stdout, "BUILD_FAILED", "engine rejected construction"));
+                default:
+                    app.Logger.LogError("docmode worker crashed (exit {Code}) for mode {Mode}: {Stderr}",
+                        proc.ExitCode, mode, stderr);
+                    LogOutcome("WORKER_CRASH");
+                    return new(StatusCodes.Status500InternalServerError,
+                        ErrorBody("WORKER_CRASH", "simulation worker failed unexpectedly"));
+            }
+        }
+        finally { gate.Release(); }
+    }
+    finally
+    {
+        Interlocked.Decrement(ref admitted);
+        try { File.Delete(jobFile); } catch { }
+    }
+}
+
+static string MinifyOrPassThrough(string stdout, string fallbackCode, string fallbackMessage)
+{
+    try
+    {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(stdout)!;
+        return node.ToJsonString();
+    }
+    catch (JsonException) { return ErrorBody(fallbackCode, fallbackMessage); }
+}
 
 // Object inventory (FR-014): flowsheet load without solving, via the worker's
 // inspect mode; cached by template mtime like solve results.
@@ -350,6 +659,60 @@ async Task<CaseOutcome> RunCaseAsync(string templateId, string templateFile,
     }
 }
 
+// One worker process, one job, one JSON document back. ExitCode null = hard
+// timeout (process killed). `gated` runs the spawn through the concurrency
+// semaphore. Shared by catalog/validate/build-solve/flash/pfd; /solve keeps
+// its own path in RunCaseAsync (identical mechanics plus cache/admission).
+async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, CancellationToken ct, bool gated)
+{
+    var jobFile = Path.Combine(Path.GetTempPath(), $"dwsim-job-{Guid.NewGuid():N}.json");
+    try
+    {
+        await File.WriteAllTextAsync(jobFile, JsonSerializer.Serialize(jobPayload, jobPayload.GetType(),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }), ct);
+
+        if (gated) await gate.WaitAsync(ct);
+        try
+        {
+            var psi = new ProcessStartInfo("dotnet", $"\"{workerDll}\" \"{jobFile}\"")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            psi.Environment["DWSIM_PATH"] = dwsimPath;
+
+            using var proc = Process.Start(psi)!;
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+            var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(timeout);
+            try
+            {
+                await proc.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                proc.Kill(entireProcessTree: true);
+                return new WorkerRun(null, "", "hard timeout");
+            }
+            return new WorkerRun(proc.ExitCode, await stdoutTask, await stderrTask);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return new WorkerRun(127, "", $"failed to start worker: {ex.Message}");
+        }
+        finally
+        {
+            if (gated) gate.Release();
+        }
+    }
+    finally
+    {
+        try { File.Delete(jobFile); } catch { /* best effort */ }
+    }
+}
+
 // Pass the worker's structured error document through when it is valid JSON
 // with an "error" field; otherwise synthesize a taxonomy body.
 static string WorkerErrorOrDefault(string stdout, string fallbackCode, string fallbackMessage)
@@ -365,9 +728,14 @@ static string WorkerErrorOrDefault(string stdout, string fallbackCode, string fa
     return ErrorBody(fallbackCode, fallbackMessage);
 }
 
+record WorkerRun(int? ExitCode, string Stdout, string Stderr);
 record SolveRequest(string TemplateId, List<PropertyOverride>? Overrides, int? TimeoutSeconds);
 record CompareRequest(string TemplateId, Dictionary<string, List<PropertyOverride>?>? Cases, int? TimeoutSeconds);
 public record PropertyOverride(string Object, string Property, double Value, string? Unit);
 record CaseOutcome(int Status, string Body);
 
-public partial class Program { } // WebApplicationFactory hook for tests
+public partial class Program
+{
+    // Shared camelCase serializer options for the new routes' inline payloads.
+    public static readonly JsonSerializerOptions JsonOpts = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+} // WebApplicationFactory hook for tests

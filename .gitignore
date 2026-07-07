@@ -10,3 +10,7 @@ publish/
 
 # OS noise
 .DS_Store
+
+# User-authored templates persisted by /flowsheets/build-solve (runtime data,
+# never committed; curated reference templates live in templates/)
+user-templates/

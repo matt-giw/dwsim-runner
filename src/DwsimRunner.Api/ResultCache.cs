@@ -8,6 +8,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 public sealed class ResultCache(int capacity)
 {
@@ -64,5 +65,41 @@ public sealed class ResultCache(int capacity)
                 o.Value.ToString("R", CultureInfo.InvariantCulture),
                 o.Unit?.ToLowerInvariant() ?? "")));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{templateId}\n{mtime}\n{canon}")));
+    }
+
+    /// <summary>Key for a flowsheet-document request (FR-BUILD-005): documents
+    /// hash identically regardless of property order/whitespace (arrays stay
+    /// order-significant); the engine version partitions the key space.</summary>
+    public static string KeyForDocument(JsonElement document, string engineVersion)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+            WriteCanonical(document, writer);
+        buffer.Write(Encoding.UTF8.GetBytes($"\n{engineVersion}"));
+        return Convert.ToHexString(SHA256.HashData(buffer.ToArray()));
+    }
+
+    private static void WriteCanonical(JsonElement el, Utf8JsonWriter w)
+    {
+        switch (el.ValueKind)
+        {
+            case JsonValueKind.Object:
+                w.WriteStartObject();
+                foreach (var p in el.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal))
+                {
+                    w.WritePropertyName(p.Name);
+                    WriteCanonical(p.Value, w);
+                }
+                w.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                w.WriteStartArray();
+                foreach (var item in el.EnumerateArray()) WriteCanonical(item, w);
+                w.WriteEndArray();
+                break;
+            default:
+                el.WriteTo(w);
+                break;
+        }
     }
 }

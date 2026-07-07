@@ -51,7 +51,7 @@ public class CoreApiTests
         Assert.True(body.GetProperty("converged").GetBoolean());
         Assert.Equal("Syngas", body.GetProperty("streams")[0].GetProperty("name").GetString());
         Assert.Equal(11.5, body.GetProperty("energy")[0].GetProperty("dutyKw").GetDouble());
-        Assert.Single(host.StartMarkers()); // exactly one worker spawn
+        Assert.Equal(2, host.StartMarkers().Length); // pre-warmed catalog + solve worker
     }
 
     [Fact]
@@ -81,8 +81,8 @@ public class CoreApiTests
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"took {sw.Elapsed}");
 
         await Task.Delay(1500); // give a survivor time to finish — it must not
-        Assert.Single(host.StartMarkers());
-        Assert.Empty(host.EndMarkers()); // killed hard: never reached the end marker
+        Assert.Equal(2, host.StartMarkers().Length); // pre-warmed catalog + solve worker
+        Assert.Single(host.EndMarkers()); // killed hard: no end marker for killed worker
     }
 
     [Fact]
@@ -102,7 +102,7 @@ public class CoreApiTests
         Assert.Equal(HttpStatusCode.OK, (await r2).StatusCode);
 
         var runs = host.RunIntervals();
-        Assert.Equal(2, runs.Count);
+        Assert.Equal(3, runs.Count); // pre-warmed catalog + 2 solve workers
         var (first, second) = runs[0].Start <= runs[1].Start ? (runs[0], runs[1]) : (runs[1], runs[0]);
         Assert.True(first.End <= second.Start,
             $"runs overlapped: [{first.Start}-{first.End}] vs [{second.Start}-{second.End}]");

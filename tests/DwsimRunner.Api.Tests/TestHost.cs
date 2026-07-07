@@ -32,6 +32,7 @@ internal sealed class RunnerHost : IDisposable
         Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(settings)));
         Client = Factory.CreateClient();
+        try { Client.GetAsync("/catalog/compounds").GetAwaiter().GetResult(); } catch { /* best effort */ }
     }
 
     public string AddTemplate(string id)

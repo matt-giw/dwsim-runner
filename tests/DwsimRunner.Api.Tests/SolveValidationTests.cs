@@ -29,7 +29,7 @@ public class SolveValidationTests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("INVALID_REQUEST", body.GetProperty("error").GetString());
-        Assert.Empty(host.StartMarkers()); // rejected before any worker spawn
+        Assert.Single(host.StartMarkers()); // only the pre-warmed catalog worker
     }
 
     [Fact]
@@ -97,7 +97,7 @@ public class SolveValidationTests
         var body2 = await (await host.Client.PostAsJsonAsync("/solve", payload)).Content.ReadAsStringAsync();
 
         Assert.Equal(body1, body2);              // byte-identical (FR-008/FR-013)
-        Assert.Single(host.StartMarkers());      // second request never spawned a worker
+        Assert.Equal(2, host.StartMarkers().Length); // pre-warmed catalog + first solve (second from cache)
     }
 
     [Fact]

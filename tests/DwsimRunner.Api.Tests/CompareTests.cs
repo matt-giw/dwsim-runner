@@ -109,6 +109,6 @@ public class CompareTests
 
         var results = (await resp.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("results");
         Assert.Equal(solveBody, results.GetProperty("same").GetRawText());
-        Assert.Single(host.StartMarkers()); // the compare case never spawned a second worker
+        Assert.Equal(2, host.StartMarkers().Length); // pre-warmed catalog + solve (compare served from cache)
     }
 }
