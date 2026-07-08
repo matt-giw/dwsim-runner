@@ -291,6 +291,29 @@ public static class FlowsheetBuilder
             if (modeProp is not null)
                 modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletTemperature"));
         }
+        // Heaters/coolers: same class of bug as the reactor block above — an
+        // explicit outletTemperature implies OutletTemperature calc mode;
+        // otherwise the engine stays in heat-duty mode (its default,
+        // HeatAdded/HeatRemoved) and silently ignores the setpoint.
+        // Spec: 005-unitop-parameter-application.
+        if (def.Type is "heater" or "cooler")
+        {
+            if (p.Name == "outletTemperature")
+            {
+                var modeProp = so.GetType().GetProperty("CalcMode");
+                if (modeProp is not null)
+                    modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletTemperature"));
+            }
+            // Engine efficiency (m_eta) is a percent (constructor default 100);
+            // the document convention is a 0–1 fraction. ≤ 1 → fraction, ×100.
+            if (p.Name == "efficiency")
+            {
+                var eta = raw.ValueKind == JsonValueKind.Object
+                    ? raw.GetProperty("value").GetDouble() : raw.GetDouble();
+                SetEngineProperty(so, p.EngineProperties, eta <= 1.0 ? eta * 100 : eta);
+                return;
+            }
+        }
         if (def.Type is "splitter" && p.Name == "splitRatio1")
         {
             var r1 = raw.ValueKind == JsonValueKind.Object ? raw.GetProperty("value").GetDouble() : raw.GetDouble();

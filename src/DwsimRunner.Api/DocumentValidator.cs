@@ -176,6 +176,8 @@ public static class DocumentValidator
                     ValidateParameterUnits(o, tag, path, typeInfo, Error);
                     if (type is "distillationColumn" or "shortcutColumn")
                         ValidateColumnRules(o, tag, path, type, Error);
+                    if (type is "heater" or "cooler")
+                        ValidateHeaterCoolerRules(o, tag, path, type, Error);
                 }
             }
             objectsByTag[tag] = (kind, type, i);
@@ -384,6 +386,20 @@ public static class DocumentValidator
         if (ToPa("condenserPressure") is { } cond && ToPa("reboilerPressure") is { } reb && cond > reb)
             error("INVALID_PARAMETER_VALUE", tag, $"{path}.parameters.condenserPressure",
                 "condenser pressure exceeds reboiler pressure; pressure must not decrease down the column");
+    }
+
+    // Heater/cooler mode-conflict rule (spec 005 FR-FIX-004): outletTemperature
+    // and heatDuty select mutually exclusive engine calculation modes — the
+    // engine would silently honor only one of them.
+    private static void ValidateHeaterCoolerRules(JsonElement obj, string tag, string path,
+        string type, Action<string, string?, string?, string> error)
+    {
+        if (!obj.TryGetProperty("parameters", out var prms) || prms.ValueKind != JsonValueKind.Object) return;
+        var names = prms.EnumerateObject().Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (names.Contains("outletTemperature") && names.Contains("heatDuty"))
+            error("CONFLICTING_PARAMETERS", tag, $"{path}.parameters",
+                $"Object '{tag}' ({type}) has conflicting parameters: 'outletTemperature' and 'heatDuty' " +
+                "are mutually exclusive — specify one or the other, not both.");
     }
 
     private static void ValidateParameterUnits(JsonElement obj, string tag, string path,

@@ -26,7 +26,17 @@ public class DocumentValidatorTests
             { "name": "Outlet", "direction": "out", "accepts": "material", "required": true },
             { "name": "Energy Inlet", "direction": "in", "accepts": "energy", "required": false } ],
           "parameters": [
-            { "name": "outletTemperature", "unitType": "temperature", "required": true } ],
+            { "name": "outletTemperature", "unitType": "temperature", "required": true },
+            { "name": "heatDuty", "unitType": "power", "required": false } ],
+          "requiresReactionSet": false },
+        { "type": "cooler", "displayName": "Cooler",
+          "ports": [
+            { "name": "Inlet", "direction": "in", "accepts": "material", "required": true },
+            { "name": "Outlet", "direction": "out", "accepts": "material", "required": true },
+            { "name": "Energy Outlet", "direction": "out", "accepts": "energy", "required": false } ],
+          "parameters": [
+            { "name": "outletTemperature", "unitType": "temperature", "required": false },
+            { "name": "heatDuty", "unitType": "power", "required": false } ],
           "requiresReactionSet": false },
         { "type": "reactorConversion", "displayName": "Conversion Reactor",
           "ports": [
@@ -165,6 +175,65 @@ public class DocumentValidatorTests
             .Select(i => $$"""{ "tag": "S{{i}}", "kind": "materialStream" }"""));
         var issues = Validate($$"""{ "schemaVersion": 1, "compounds": ["Methane"], "propertyPackage": "PR", "objects": [{{objects}}], "connections": [] }""");
         Assert.Contains(issues, i => i.Code == "DOCUMENT_TOO_LARGE");
+    }
+
+    // 005-unitop-parameter-application T006 / FR-FIX-004: outletTemperature
+    // and heatDuty on the same heater/cooler are mutually exclusive — the
+    // engine's CalcMode can only honor one of them.
+    private static string UnitOpDoc(string type, string parameters) => $$"""
+    {
+      "schemaVersion": 1,
+      "compounds": ["Water"],
+      "propertyPackage": "STEAM",
+      "objects": [
+        { "tag": "FEED", "kind": "materialStream" },
+        { "tag": "U-1", "kind": "unitOp", "type": "{{type}}",
+          "parameters": { {{parameters}} } },
+        { "tag": "PROD", "kind": "materialStream" }
+      ],
+      "connections": [
+        { "from": "FEED", "to": "U-1", "port": "Inlet" },
+        { "from": "U-1", "to": "PROD", "port": "Outlet" }
+      ]
+    }
+    """;
+
+    [Theory]
+    [InlineData("heater")]
+    [InlineData("cooler")]
+    public void OutletTemperature_and_heatDuty_together_conflict(string type)
+    {
+        var issues = Validate(UnitOpDoc(type, """
+            "outletTemperature": { "value": 353.15, "unit": "K" },
+                          "heatDuty": { "value": 230, "unit": "kW" }
+            """));
+        var conflict = Assert.Single(issues, i => i.Code == "CONFLICTING_PARAMETERS");
+        Assert.Equal("error", conflict.Severity);
+        Assert.Equal("U-1", conflict.Tag);
+        Assert.Contains("outletTemperature", conflict.Message);
+        Assert.Contains("heatDuty", conflict.Message);
+    }
+
+    [Theory]
+    [InlineData("heater")]
+    [InlineData("cooler")]
+    public void OutletTemperature_alone_does_not_conflict(string type)
+    {
+        var issues = Validate(UnitOpDoc(type, """
+            "outletTemperature": { "value": 353.15, "unit": "K" }
+            """));
+        Assert.DoesNotContain(issues, i => i.Code == "CONFLICTING_PARAMETERS");
+    }
+
+    [Theory]
+    [InlineData("heater")]
+    [InlineData("cooler")]
+    public void HeatDuty_alone_does_not_conflict(string type)
+    {
+        var issues = Validate(UnitOpDoc(type, """
+            "heatDuty": { "value": 230, "unit": "kW" }
+            """));
+        Assert.DoesNotContain(issues, i => i.Code == "CONFLICTING_PARAMETERS");
     }
 
     [Fact]
