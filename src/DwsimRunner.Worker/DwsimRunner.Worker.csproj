@@ -42,6 +42,14 @@
       <HintPath>$(DwsimPath)/DWSIM.UnitOperations.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="DWSIM.Drawing.SkiaSharp">
+      <HintPath>$(DwsimPath)/DWSIM.Drawing.SkiaSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SkiaSharp">
+      <HintPath>$(DwsimPath)/SkiaSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

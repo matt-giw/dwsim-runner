@@ -71,8 +71,11 @@ public static class DocumentValidator
         ["volumetricFlow"] = ["m3/h", "m3/s", "L/min", "L/s", "L/h", "ft3/s"],
         ["enthalpy"] = ["kJ/kg", "J/kg", "BTU/lb"],
         ["power"] = ["kW", "W", "MW", "hp"],
+        ["volume"] = ["m3", "L", "ft3"],
+        ["length"] = ["m", "mm", "cm", "in", "ft"],
         ["dimensionless"] = [],
         ["integer"] = [],
+        ["string"] = [],
     };
 
     private static readonly HashSet<string> AllKnownUnits =
@@ -171,6 +174,8 @@ public static class DocumentValidator
                         Error("MISSING_REQUIRED_PARAMETER", tag, $"{path}.parameters",
                             $"'{type}' requires parameter '{reqParam.Name}'");
                     ValidateParameterUnits(o, tag, path, typeInfo, Error);
+                    if (type is "distillationColumn" or "shortcutColumn")
+                        ValidateColumnRules(o, tag, path, type, Error);
                 }
             }
             objectsByTag[tag] = (kind, type, i);
@@ -322,6 +327,63 @@ public static class DocumentValidator
                         $"fractions sum to {sum:G6}; they must sum to 1 (±1e-4)");
             }
         }
+    }
+
+    // Column-specific structural rules (T032/US2): the feed must land on an
+    // existing stage, reflux must be positive, and the condenser cannot sit at
+    // a higher pressure than the reboiler (pressure increases down a column).
+    private static readonly Dictionary<string, double> PressureToPa = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Pa"] = 1, ["kPa"] = 1e3, ["MPa"] = 1e6, ["bar"] = 1e5,
+        ["mbar"] = 100, ["atm"] = 101325, ["psi"] = 6894.757,
+    };
+
+    private static void ValidateColumnRules(JsonElement obj, string tag, string path,
+        string type, Action<string, string?, string?, string> error)
+    {
+        if (!obj.TryGetProperty("parameters", out var prms) || prms.ValueKind != JsonValueKind.Object) return;
+
+        static double? Numeric(JsonElement prms, string name)
+        {
+            if (!prms.TryGetProperty(name, out var v)) return null;
+            if (v.ValueKind == JsonValueKind.Number) return v.GetDouble();
+            if (v.ValueKind == JsonValueKind.Object && v.TryGetProperty("value", out var inner)
+                && inner.ValueKind == JsonValueKind.Number) return inner.GetDouble();
+            return null;
+        }
+        static string? Unit(JsonElement prms, string name) =>
+            prms.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object
+            && v.TryGetProperty("unit", out var u) ? u.GetString() : null;
+
+        if (type == "distillationColumn")
+        {
+            var stages = Numeric(prms, "numberOfStages");
+            var feedStage = Numeric(prms, "feedStage");
+            if (stages is < 3)
+                error("INVALID_PARAMETER_VALUE", tag, $"{path}.parameters.numberOfStages",
+                    $"numberOfStages is {stages}; a column needs at least 3 stages");
+            if (feedStage is <= 0)
+                error("INVALID_PARAMETER_VALUE", tag, $"{path}.parameters.feedStage",
+                    $"feedStage is {feedStage}; it must be ≥ 1");
+            else if (feedStage is { } fsv && stages is { } st && fsv > st)
+                error("INVALID_PARAMETER_VALUE", tag, $"{path}.parameters.feedStage",
+                    $"feedStage {fsv} is outside the column ({st} stages)");
+        }
+
+        if (Numeric(prms, "refluxRatio") is { } rr && rr <= 0)
+            error("INVALID_PARAMETER_VALUE", tag, $"{path}.parameters.refluxRatio",
+                $"refluxRatio is {rr}; it must be > 0");
+
+        double? ToPa(string name)
+        {
+            if (Numeric(prms, name) is not { } value) return null;
+            var unit = Unit(prms, name);
+            if (unit is null or { Length: 0 }) return value;   // bare number = SI (Pa)
+            return PressureToPa.TryGetValue(unit, out var factor) ? value * factor : null;   // unknown unit already flagged
+        }
+        if (ToPa("condenserPressure") is { } cond && ToPa("reboilerPressure") is { } reb && cond > reb)
+            error("INVALID_PARAMETER_VALUE", tag, $"{path}.parameters.condenserPressure",
+                "condenser pressure exceeds reboiler pressure; pressure must not decrease down the column");
     }
 
     private static void ValidateParameterUnits(JsonElement obj, string tag, string path,

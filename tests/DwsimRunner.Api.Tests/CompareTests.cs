@@ -55,8 +55,8 @@ public class CompareTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(11)]
-    public async Task Case_count_outside_1_to_10_is_400(int count)
+    [InlineData(26)]
+    public async Task Case_count_outside_1_to_25_is_400(int count)
     {
         using var host = new RunnerHost();
         host.AddTemplate("t");
@@ -67,6 +67,26 @@ public class CompareTests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("INVALID_REQUEST", body.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Twenty_five_cases_are_accepted_and_all_return_results()
+    {
+        // US5 raised the cap from 10 to 25 so a full sensitivity sweep fits in
+        // one /compare. Queue capacity must admit the whole set (6 × 5 = 30).
+        using var host = new RunnerHost(new() { ["MAX_CONCURRENT_SOLVES"] = "6" });
+        host.AddTemplate("t");
+
+        var cases = Enumerable.Range(0, 25).ToDictionary(
+            i => $"P={i} bar",
+            i => (object)new[] { new { @object = "Syngas", property = "pressure", value = (double)i, unit = "bar" } });
+        var resp = await host.Client.PostAsJsonAsync("/compare", new { templateId = "t", cases });
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var results = (await resp.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("results");
+        Assert.Equal(25, results.EnumerateObject().Count());
+        Assert.All(results.EnumerateObject(),
+            r => Assert.True(r.Value.TryGetProperty("converged", out _), $"case '{r.Name}' has no result"));
     }
 
     [Fact]

@@ -27,15 +27,18 @@ public class CoreApiTests
     }
 
     [Fact]
-    public async Task Templates_lists_dwxmz_ids()
+    public async Task Templates_lists_dwxmz_ids_as_objects()
     {
+        // Listing elements became objects in 002 (contracts/runner-api-v2.md).
         using var host = new RunnerHost();
         host.AddTemplate("methanol_synthesis");
         host.AddTemplate("pem-ref-plant");
 
-        var ids = await host.Client.GetFromJsonAsync<string[]>("/templates");
+        var entries = await host.Client.GetFromJsonAsync<JsonElement>("/templates");
 
-        Assert.Equal(new[] { "methanol_synthesis", "pem-ref-plant" }, ids!.OrderBy(x => x).ToArray());
+        var byId = entries.EnumerateArray().ToDictionary(t => t.GetProperty("id").GetString()!);
+        Assert.Equal(new[] { "methanol_synthesis", "pem-ref-plant" }, byId.Keys.OrderBy(x => x).ToArray());
+        Assert.All(byId.Values, t => Assert.Equal("curated", t.GetProperty("source").GetString()));
     }
 
     [Fact]

@@ -12,8 +12,10 @@ services:
       # Optional shared API key (FR-016). Set to require X-Api-Key on all
       # routes except GET /health. Unset = open (local dev).
       RUNNER_API_KEY: "${RUNNER_API_KEY:-}"
+      USER_TEMPLATES_PATH: /user-templates
     volumes:
       - ./templates:/templates:ro
+      - ./user-templates:/user-templates
     deploy:
       resources:
         limits:

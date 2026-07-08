@@ -48,7 +48,8 @@ scan_layer() {
     # Only tar+gzip layers have file entries; attestation/json blobs are skipped.
     if ! gzip -t "$blob" 2>/dev/null; then return; fi
     local found
-    found=$(gzip -dc "$blob" | tar -t 2>/dev/null | grep -iE '(^|/)DWSIM\.[^/]+$' || true)
+    found=$(gzip -dc "$blob" | tar -t 2>/dev/null \
+        | grep -iE '(^|/)(DWSIM\.|SkiaSharp[^/]*\.dll|libSkiaSharp)[^/]*$' || true)
     if [ -n "$found" ]; then
         leaks="${leaks}${leaks:+$'\n'}${found}"
     fi

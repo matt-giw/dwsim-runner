@@ -118,6 +118,7 @@ public static class UnitOpCatalog
         new UnitOpDef("reactorCSTR", "CSTR", ObjectType.RCT_CSTR,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("volume", "volume", false, "Volume"),
+             P("headspace", "volume", false, "Headspace"),   // vapor volume; required by the engine for gas-phase feeds
              P("outletTemperature", "temperature", false, "OutletTemperature")], true),
 
         new UnitOpDef("reactorPFR", "PFR", ObjectType.RCT_PFR,
@@ -136,15 +137,18 @@ public static class UnitOpCatalog
              P("condenserPressure", "pressure", true, "m_condenserpressure", "CondenserPressure"),
              P("reboilerPressure", "pressure", true, "m_boilerpressure", "ReboilerPressure")], false),
 
+        // All distillationColumn ports and parameters are bound by
+        // ColumnConfigurator (dedicated engine methods) — indexes unused.
         new UnitOpDef("distillationColumn", "Distillation Column (rigorous)", ObjectType.DistillationColumn,
             [In("Feed", 0), Out("Distillate", 0), Out("Bottoms", 1),
              EnergyOut("Condenser Duty", 0), EnergyIn("Reboiler Duty", 10)],
-            [P("numberOfStages", "integer", true, "NumberOfStages"),
-             P("feedStage", "integer", true),                          // applied by the builder, not reflection
-             P("refluxRatio", "dimensionless", true),                  // condenser spec, applied by the builder
-             P("condenserPressure", "pressure", true, "CondenserPressure"),
-             P("reboilerPressure", "pressure", true, "ReboilerPressure"),
-             P("distillateMolarFlow", "molarFlow", false)], false),    // condenser spec alternative
+            [P("numberOfStages", "integer", true),
+             P("feedStage", "integer", true),
+             P("refluxRatio", "dimensionless", true),                  // condenser spec ("Reflux Ratio")
+             P("condenserPressure", "pressure", true),
+             P("reboilerPressure", "pressure", true),
+             P("distillateMolarFlow", "molarFlow", false),             // condenser spec alternative
+             P("bottomsMolarFlow", "molarFlow", false)], false),       // reboiler spec ("Product Molar Flow Rate")
 
         new UnitOpDef("recycle", "Recycle", ObjectType.OT_Recycle,
             [In("Inlet", 0), Out("Outlet", 0)],
@@ -201,7 +205,7 @@ public static class PackageCatalog
     /// <summary>Resolve a wire id (or full display name) back to the engine name.</summary>
     public static string? Resolve(string idOrName, IEnumerable<string> engineNames)
     {
-        var list = engineNames.ToList();
+        var list = engineNames.Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
         var exact = list.FirstOrDefault(n => string.Equals(n, idOrName, StringComparison.OrdinalIgnoreCase));
         if (exact is not null) return exact;
         var known = Known.FirstOrDefault(k => string.Equals(k.Id, idOrName, StringComparison.OrdinalIgnoreCase));

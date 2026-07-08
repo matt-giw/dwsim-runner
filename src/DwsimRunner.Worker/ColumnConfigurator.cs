@@ -1,96 +1,144 @@
 // dwsim-runner Worker — GPL-3.0
-// DistillationColumn parameter binding (T032/T023): the rigorous column has
-// configuration that doesn't map cleanly to single-property reflection. The
-// builder dispatches feedStage / refluxRatio / distillateMolarFlow here so
-// the catalog's advertised parameters land on the right subobjects.
+// DistillationColumn binding (T032): the rigorous column does not use the
+// generic port/property surface — it has dedicated connection methods
+// (ConnectFeed/ConnectDistillate/…), a two-slot spec system
+// (SetCondenserSpec/SetReboilerSpec), and per-stage pressures. This class owns
+// that translation so FlowsheetBuilder stays generic.
 //
-// DWSIM's DistillationColumn exposes a SetupData/Solve/etc. surface; the
-// fields we touch here are stable across the 9.x line and probed defensively
-// (missing members are an explicit BUILD_FAILED, never a silent skip).
+// Parameter contract (catalog):
+//   numberOfStages      → Column.SetNumberOfStages (applied before any feed connect)
+//   feedStage (1-based) → ConnectFeed(stream, stage-1)
+//   refluxRatio         → SetCondenserSpec("Reflux Ratio", …)
+//   distillateMolarFlow → SetCondenserSpec("Product Molar Flow Rate", …) — alternative to refluxRatio
+//   bottomsMolarFlow    → SetReboilerSpec("Product Molar Flow Rate", …)
+//   condenserPressure   → Stages[0].P   (bar/kPa/… converted to Pa)
+//   reboilerPressure    → Stages[^1].P; middle stages interpolated linearly in Finish()
 
-using System.Reflection;
 using System.Text.Json;
 using DWSIM.Interfaces;
+using DWSIM.UnitOperations.UnitOperations;
 
 namespace DwsimRunner.Worker;
 
 internal static class ColumnConfigurator
 {
+    /// <summary>Column-owned connection handling. Returns false when the unit
+    /// is not a rigorous column (caller falls back to the generic port path).</summary>
+    public static bool TryConnect(ISimulationObject unitObj, string portName,
+        ISimulationObject streamObj, FlowObject unitDoc)
+    {
+        if (unitObj is not DistillationColumn col) return false;
+
+        switch (portName)
+        {
+            case "Feed":
+                EnsureStages(col, unitDoc);
+                col.ConnectFeed(streamObj, FeedStageIndex(col, unitDoc));
+                return true;
+            case "Distillate":
+                col.ConnectDistillate(streamObj);
+                return true;
+            case "Bottoms":
+                col.ConnectBottoms(streamObj);
+                return true;
+            case "Condenser Duty":
+                col.ConnectCondenserDuty(streamObj);
+                return true;
+            case "Reboiler Duty":
+                col.ConnectReboilerDuty(streamObj);
+                return true;
+            default:
+                throw new InvalidOperationException(
+                    $"distillationColumn has no port '{portName}'; valid: Feed, Distillate, Bottoms, Condenser Duty, Reboiler Duty");
+        }
+    }
+
+    public static bool Handles(string paramName) => paramName is
+        "numberOfStages" or "feedStage" or "refluxRatio" or "distillateMolarFlow"
+        or "bottomsMolarFlow" or "condenserPressure" or "reboilerPressure";
+
     public static void Apply(ISimulationObject column, string paramName, JsonElement raw)
     {
-        var t = column.GetType();
+        if (column is not DistillationColumn col)
+            throw new InvalidOperationException($"'{paramName}' is only supported on distillationColumn");
 
         switch (paramName)
         {
-            case "feedStage":
-                SetFeedStage(t, column, AsInt(raw));
+            case "numberOfStages":
+                SetStageCount(col, AsInt(raw));
                 return;
+            case "feedStage":
+                return;   // consumed by TryConnect(Feed) — validated structurally
             case "refluxRatio":
-                SetRefluxRatio(t, column, AsDouble(raw));
+                col.SetCondenserSpec("Reflux Ratio", AsDouble(raw), "", "");
                 return;
             case "distillateMolarFlow":
-                SetDistillateFlow(t, column, AsDouble(raw));
+                col.SetCondenserSpec("Product Molar Flow Rate", AsDouble(raw), AsUnit(raw) ?? "mol/s", "");
+                return;
+            case "bottomsMolarFlow":
+                col.SetReboilerSpec("Product Molar Flow Rate", AsDouble(raw), AsUnit(raw) ?? "mol/s", "");
+                return;
+            case "condenserPressure":
+                col.Stages[0].P = ToPa(raw);
+                return;
+            case "reboilerPressure":
+                col.Stages[^1].P = ToPa(raw);
                 return;
             default:
                 throw new InvalidOperationException($"ColumnConfigurator has no handler for '{paramName}'");
         }
     }
 
+    /// <summary>Post-parameter pass: linear stage-pressure profile between the
+    /// condenser and reboiler pressures.</summary>
+    public static void Finish(ISimulationObject column)
+    {
+        if (column is not DistillationColumn col || col.Stages.Count < 3) return;
+        var top = col.Stages[0].P;
+        var bottom = col.Stages[^1].P;
+        if (top <= 0 || bottom <= 0) return;
+        var n = col.Stages.Count;
+        for (var i = 1; i < n - 1; i++)
+            col.Stages[i].P = top + (bottom - top) * i / (n - 1);
+    }
+
+    private static void SetStageCount(DistillationColumn col, int n)
+    {
+        if (n < 3) throw new InvalidOperationException($"numberOfStages is {n}; a column needs at least 3 stages");
+        if (col.NumberOfStages != n)
+        {
+            col.NumberOfStages = n;
+            col.SetNumberOfStages(n);
+        }
+    }
+
+    // numberOfStages must be applied before ConnectFeed places the feed on a
+    // stage — connections run before the parameter pass in the builder.
+    private static void EnsureStages(DistillationColumn col, FlowObject unitDoc)
+    {
+        if (unitDoc.Parameters is { } prms && prms.TryGetValue("numberOfStages", out var rawN))
+            SetStageCount(col, AsInt(rawN));
+    }
+
+    private static int FeedStageIndex(DistillationColumn col, FlowObject unitDoc)
+    {
+        var stage = unitDoc.Parameters is { } prms && prms.TryGetValue("feedStage", out var rawS)
+            ? AsInt(rawS) : (col.NumberOfStages + 1) / 2;
+        return Math.Clamp(stage - 1, 0, Math.Max(col.NumberOfStages - 1, 0));
+    }
+
     private static int AsInt(JsonElement e) =>
         e.ValueKind == JsonValueKind.Object ? e.GetProperty("value").GetInt32() : e.GetInt32();
     private static double AsDouble(JsonElement e) =>
         e.ValueKind == JsonValueKind.Object ? e.GetProperty("value").GetDouble() : e.GetDouble();
-
-    // The feed stage is the index of the stage that receives the feed; DWSIM
-    // stores feed stages under the column's InputDeptCollection or via
-    // SetFeedStage on the DistillationColumn class. We try a small set of
-    // known member shapes and fail loudly if none match.
-    private static void SetFeedStage(Type t, ISimulationObject column, int stage)
+    private static string? AsUnit(JsonElement e) =>
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty("unit", out var u) ? u.GetString() : null;
+    private static double ToPa(JsonElement e)
     {
-        // Try SetFeedStage(int) method first.
-        var m = t.GetMethod("SetFeedStage", BindingFlags.Public | BindingFlags.Instance, null, [typeof(int)], null);
-        if (m is not null) { m.Invoke(column, [stage]); return; }
-
-        // Fall back to a writable FeedStage property.
-        if (TrySetProperty(t, column, "FeedStage", stage)) return;
-
-        // Last resort: the column's GraphicObject exposes an edit collection;
-        // without engine-specific support we surface a named BUILD_FAILED.
-        throw new InvalidOperationException(
-            $"DistillationColumn '{column.GraphicObject.Tag}' exposes neither SetFeedStage(int) nor a FeedStage property — column feed-stage binding needs engine support");
-    }
-
-    private static void SetRefluxRatio(Type t, ISimulationObject column, double rr)
-    {
-        if (TrySetProperty(t, column, "RefluxRatio", rr)) return;
-        if (TrySetProperty(t, column, "m_refluxratio", rr)) return;
-        // CondenserSpec enum + R = value pattern: many DWSIM columns use a
-        // `CondenserSpec` enum and a paired numeric field. We set the numeric
-        // field; the builder chooses RR by advertising it in the catalog.
-        if (TrySetProperty(t, column, "RR", rr)) return;
-        throw new InvalidOperationException(
-            $"DistillationColumn '{column.GraphicObject.Tag}' has no RefluxRatio/m_refluxratio/RR property");
-    }
-
-    private static void SetDistillateFlow(Type t, ISimulationObject column, double flow)
-    {
-        if (TrySetProperty(t, column, "DistillateFlow", flow)) return;
-        if (TrySetProperty(t, column, "m_distillate_flow", flow)) return;
-        if (TrySetProperty(t, column, "DistillateMolarFlow", flow)) return;
-        throw new InvalidOperationException(
-            $"DistillationColumn '{column.GraphicObject.Tag}' has no DistillateFlow/m_distillate_flow/DistillateMolarFlow property");
-    }
-
-    private static bool TrySetProperty(Type t, ISimulationObject obj, string name, double value)
-    {
-        var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-        if (p is null || !p.CanWrite) return false;
-        var target = p.PropertyType.IsEnum ? Enum.Parse(p.PropertyType, value.ToString("R"), true)
-            : p.PropertyType == typeof(int) ? (object)(int)value
-            : p.PropertyType == typeof(double) ? value
-            : p.PropertyType == typeof(double?) ? (double?)value
-            : Convert.ChangeType(value, p.PropertyType);
-        p.SetValue(obj, target);
-        return true;
+        var v = AsDouble(e);
+        var unit = AsUnit(e);
+        return unit is { Length: > 0 }
+            ? DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI(unit, v)
+            : v;
     }
 }

@@ -169,20 +169,34 @@ public class BuildSolveEndpointTests
             .Replace("\"tag\": \"V-1\"", "\"tag\": \"__sleep:8\"")
             .Replace("\"to\": \"V-1\"", "\"to\": \"__sleep:8\"")
             .Replace("\"from\": \"V-1\"", "\"from\": \"__sleep:8\"");
+        var before = host.StartMarkers().Length;
         var slow = host.Client.PostAsync("/flowsheets/build-solve", DocBody(slowDoc));
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (host.StartMarkers().Length <= before && DateTime.UtcNow < deadline)
+            await Task.Delay(50);
+        Assert.True(host.StartMarkers().Length > before, "slow request never reached the worker");
 
-        // Fill the queue (maxAdmitted = maxConcurrent * 5 = 5) so the next request gets 429.
-        await Task.Delay(2000);
-        for (var i = 0; i < 5; i++)
-            _ = host.Client.PostAsync("/flowsheets/build-solve", DocBody(ValidDoc));
-        var fastTask = host.Client.PostAsync("/flowsheets/build-solve", DocBody(ValidDoc));
+        // Occupy the remaining queue slots one at a time (maxAdmitted = 1 × 5).
+        // Each probe either blocks on the held gate (slot occupied) or is the
+        // 429 rejection under test — no racing fire-and-forget batch.
+        HttpResponseMessage? rejected = null;
+        var blocked = new List<Task<HttpResponseMessage>>();
+        for (var i = 0; i < 8 && rejected is null; i++)
+        {
+            var probe = host.Client.PostAsync("/flowsheets/build-solve", DocBody(ValidDoc));
+            var completed = await Task.WhenAny(probe, Task.Delay(500));
+            if (completed == probe && probe.Result.StatusCode == HttpStatusCode.TooManyRequests)
+                rejected = probe.Result;
+            else if (completed != probe)
+                blocked.Add(probe);
+        }
 
-        var fastResp = await fastTask;
-        Assert.Equal(HttpStatusCode.TooManyRequests, fastResp.StatusCode);
-        var body = await fastResp.Content.ReadFromJsonAsync<JsonElement>(Json);
+        Assert.NotNull(rejected);
+        var body = await rejected!.Content.ReadFromJsonAsync<JsonElement>(Json);
         Assert.Equal("QUEUE_FULL", body.GetProperty("error").GetString());
 
         await slow;
+        await Task.WhenAll(blocked);
     }
 
     [Fact]

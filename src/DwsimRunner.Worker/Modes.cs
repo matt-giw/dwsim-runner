@@ -23,10 +23,10 @@ static class Modes
 
     // ── catalog (T009) ───────────────────────────────────────────────────────
     // Engine compounds + property packages + the static UnitOpCatalog allowlist.
-    // Does NOT require CreateFlowsheet() — Automation3.AvailableCompounds and
-    // Automation3.AvailablePropertyPackages are populated at construction. This
-    // means catalog works on a fresh install with no SkiaSharp/native surface
-    // present, which is what the SaaS runner needs for fast startup.
+    // Compounds come straight off Automation3 (populated at construction);
+    // property packages need a flowsheet — Automation3.AvailablePropertyPackages
+    // stays empty headless, so we go through CreateFlowsheet() like
+    // FlowsheetBuilder does.
     public static CatalogResult Catalog(Job job)
     {
         var auto = new Automation3();
@@ -40,10 +40,16 @@ static class Modes
                 CasNumber: SafeString(kv.Value, "CAS_Number")))
             .ToList();
 
-        var packages = ((System.Collections.IEnumerable)auto.AvailablePropertyPackages.Values)
-            .Cast<IPropertyPackage>()
-            .Select(pp => pp.Name)
-            .Where(n => !string.IsNullOrWhiteSpace(n))
+        var packageNames = ((System.Collections.IEnumerable)auto.AvailablePropertyPackages.Values)
+            .Cast<IPropertyPackage>().Select(pp => pp.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        if (packageNames.Count == 0)
+        {
+            var fs = auto.CreateFlowsheet();
+            if (fs is not null)
+                packageNames = fs.GetAvailablePropertyPackages().Cast<string>()
+                    .Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        }
+        var packages = packageNames
             .OrderBy(n => n, StringComparer.Ordinal)
             .Select(name =>
             {
@@ -143,21 +149,19 @@ static class Modes
         engineWarnings.AddRange(warnings.Select(w => $"[{w.Code}] {w.Message}"));
 
         // ── optional save (T037) ─────────────────────────────────────────────
-        TemplateOut? templateOut = null;
-        if (job.SaveAsTemplate is { } save && job.SavePath is { Length: > 0 } path)
+        // Conflict/overwrite policy and listing metadata (sidecar, template
+        // block) are owned by the API; the worker's only job is the engine
+        // save. Persist even when unsolved (US3: solvedAtSave:false).
+        if (job.SavePath is { Length: > 0 } path)
         {
-            if (File.Exists(path) && !save.Overwrite)
-                throw new WorkerInputException("TEMPLATE_NAME_CONFLICT",
-                    $"a template named '{save.Id}' already exists; pass overwrite:true to replace it");
             try
             {
                 auto.SaveFlowsheet2(fs, path);
-                templateOut = new TemplateOut(save.Id, "user", SavedAtSave: true);
             }
             catch (Exception ex)
             {
                 throw new WorkerInputException("BUILD_FAILED",
-                    $"flowsheet built and solved but could not be saved to '{path}': {ex.Message}");
+                    $"flowsheet built but could not be saved to '{path}': {ex.Message}");
             }
         }
 
@@ -169,7 +173,7 @@ static class Modes
             UnitOps: unitOps,
             Warnings: engineWarnings,
             Build: build,
-            Template: templateOut);
+            Template: null);
     }
 
     private static StreamRow HarvestStream(DWSIM.Thermodynamics.Streams.MaterialStream ms)
@@ -264,8 +268,17 @@ static class Modes
         if (pp.Length == 0) throw new WorkerInputException("FLASH_INVALID", "propertyPackage is required");
 
         var auto = new Automation3();
+
+        // Headless engines often report an empty/null-named
+        // AvailablePropertyPackages — fall back to the flowsheet-level listing
+        // (same workaround as catalog mode).
         var engineNames = ((System.Collections.IEnumerable)auto.AvailablePropertyPackages.Values)
-            .Cast<IPropertyPackage>().Select(p => p.Name).ToList();
+            .Cast<IPropertyPackage>().Select(p => p.Name)
+            .Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        var flowsheetForNames = engineNames.Count == 0 ? auto.CreateFlowsheet() : null;
+        if (flowsheetForNames is not null)
+            engineNames = flowsheetForNames.GetAvailablePropertyPackages().Cast<string>()
+                .Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
         var ppName = PackageCatalog.Resolve(pp, engineNames)
             ?? throw new WorkerInputException("FLASH_INVALID",
                 $"property package '{pp}' not found; available ids: {string.Join(", ", engineNames.Select(n => PackageCatalog.Classify(n).Id).Distinct().Order())}");
@@ -295,11 +308,19 @@ static class Modes
 
         // Build a temporary flowsheet holding compounds + property package so
         // the package's CalculateEquilibrium2 has a working backing store.
-        var fs = auto.CreateFlowsheet()
+        var fs = flowsheetForNames ?? auto.CreateFlowsheet()
             ?? throw new WorkerInputException("WORKER_CRASH", "engine failed to create a flowsheet");
         foreach (var c in resolvedCompounds) fs.AddCompound(c);
         fs.CreateAndAddPropertyPackage(ppName);
         var package = fs.PropertyPackages.Values.First();
+
+        // CalculateEquilibrium2 pulls the feed composition from the package's
+        // CurrentMaterialStream (RET_VMOL) — a bare package NREs. Feed it a
+        // scratch stream carrying the requested overall composition.
+        var feed = (IMaterialStream)fs.AddObject(
+            DWSIM.Interfaces.Enums.GraphicObjects.ObjectType.MaterialStream, 50, 50, "FLASH-FEED");
+        feed.SetOverallMolarComposition([.. compositionVector]);
+        package.CurrentMaterialStream = feed;
 
         // Map flashType → FlashCalculationType + the two spec values in SI.
         DWSIM.Interfaces.Enums.FlashCalculationType calcType;
@@ -420,16 +441,32 @@ static class Modes
 
     private static PfdResult RenderPfd(IFlowsheet fs)
     {
-        // The headless SkiaSharp surface can render to a PNG stream. T054
-        // wires this up; until the native libs are confirmed on the build
-        // image, we surface a structured failure.
+        // Draw the flowsheet's headless SkiaSharp surface into an offscreen
+        // bitmap. Needs libSkiaSharp (shipped with DWSIM, resolved by
+        // DwsimResolver) and fontconfig on the image (Dockerfile).
         try
         {
-            var surfaceField = fs.GetType().GetMethod("GetSurface");
-            if (surfaceField is null)
-                throw new RenderFailedException("PFD rendering not available in this engine build (no GetSurface)");
-            // TODO T054: surface.WriteToPNG(stream); base64.
-            throw new RenderFailedException("PFD rendering not yet implemented (T054)");
+            var surfaceObj = fs.GetType().GetMethod("GetSurface")?.Invoke(fs, null)
+                ?? throw new RenderFailedException("PFD rendering not available in this engine build (no GetSurface)");
+            if (surfaceObj is not DWSIM.Drawing.SkiaSharp.GraphicsSurface surface)
+                throw new RenderFailedException($"unexpected drawing surface type '{surfaceObj.GetType().Name}'");
+
+            const int width = 1600, height = 1000;
+            if (fs.GraphicObjects.Count == 0)
+                throw new RenderFailedException("flowsheet has no drawable objects");
+
+            surface.ZoomAll(width, height);
+
+            using var bitmap = new SkiaSharp.SKBitmap(width, height);
+            using (var canvas = new SkiaSharp.SKCanvas(bitmap))
+            {
+                canvas.Clear(SkiaSharp.SKColors.White);
+                surface.UpdateCanvas(canvas);
+            }
+            using var image = SkiaSharp.SKImage.FromBitmap(bitmap);
+            using var png = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 90)
+                ?? throw new RenderFailedException("PNG encoding produced no data");
+            return new PfdResult(Convert.ToBase64String(png.ToArray()));
         }
         catch (RenderFailedException) { throw; }
         catch (Exception ex)

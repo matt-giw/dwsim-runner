@@ -13,15 +13,18 @@ internal sealed class RunnerHost : IDisposable
 {
     public WebApplicationFactory<Program> Factory { get; }
     public string TemplatesDir { get; }
+    public string UserTemplatesDir { get; }
     public HttpClient Client { get; }
 
     public RunnerHost(Dictionary<string, string?>? overrides = null)
     {
         TemplatesDir = Directory.CreateTempSubdirectory("dwsim-api-tests-").FullName;
+        UserTemplatesDir = Path.Combine(TemplatesDir, "user");
 
         var settings = new Dictionary<string, string?>
         {
             ["TEMPLATES_PATH"] = TemplatesDir,
+            ["USER_TEMPLATES_PATH"] = UserTemplatesDir,
             ["WORKER_PATH"] = Path.Combine(AppContext.BaseDirectory, "FakeWorker.dll"),
             ["DWSIM_PATH"] = TemplatesDir,   // no DWSIM present → health reports dwsimFound:false
             ["SOLVE_TIMEOUT_SECONDS"] = "30",

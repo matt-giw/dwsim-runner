@@ -114,12 +114,16 @@ app.MapGet("/health", () =>
         templatesPath,
         templates = ListTemplateIds(),
         maxConcurrent,
+        maxEvaluations = 30,     // /optimize budget cap (runner-api-v2.md)
+        maxTimeoutSeconds = 600, // per-evaluation timeoutSeconds cap
         hint = found ? null :
             $"DWSIM not found at '{dwsimPath}'. Install DWSIM (https://dwsim.org) and set DWSIM_PATH " +
             "to its install directory (on-prem: mount the install at /opt/dwsim).",
     });
 });
 
+// /health keeps the bare-id readiness array (curated only, spec-001 contract);
+// GET /templates is the object-shaped listing (runner-api-v2.md).
 string?[] ListTemplateIds() =>
     Directory.Exists(templatesPath)
         ? Directory.EnumerateFiles(templatesPath, "*.dwxmz")
@@ -128,7 +132,29 @@ string?[] ListTemplateIds() =>
             .ToArray()
         : [];
 
-app.MapGet("/templates", () => Results.Ok(ListTemplateIds()));
+app.MapGet("/templates", () => Results.Ok(userTemplates.List().Select(t => new
+{
+    id = t.Id,
+    source = t.Source,
+    createdUtc = t.CreatedUtc,
+    solvedAtSave = t.SolvedAtSave,
+})));
+
+app.MapDelete("/templates/{id}", (string id) =>
+{
+    if (string.IsNullOrEmpty(id) || !templateIdPattern.IsMatch(id))
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "template id must match ^[A-Za-z0-9._-]+$");
+    if (userTemplates.CuratedExists(id))
+        return ErrorResult(StatusCodes.Status403Forbidden, "TEMPLATE_READONLY",
+            $"'{id}' is a curated template and cannot be deleted");
+    if (!userTemplates.UserExists(id))
+        return ErrorResult(StatusCodes.Status404NotFound, "TEMPLATE_NOT_FOUND", $"unknown template '{id}'");
+    // No cache purge needed: solve cache keys carry the template file mtime,
+    // and ResolveTemplate 404s before any cache lookup once the file is gone.
+    userTemplates.Delete(id);
+    return Results.NoContent();
+});
 
 // ── engine catalog (002: FR-CAT-001..004) ──────────────────────────────────
 
@@ -289,15 +315,25 @@ app.MapPost("/flowsheets/build-solve", async (HttpContext http, CancellationToke
         : 120;
 
     string? savePath = null;
-    if (requestBody.TryGetProperty("saveAsTemplate", out var saveEl) && saveEl.ValueKind == JsonValueKind.Object
-        && saveEl.TryGetProperty("id", out var idEl) && idEl.GetString() is { Length: > 0 } saveId
-        && templateIdPattern.IsMatch(saveId))
+    string? saveTemplateId = null;
+    if (requestBody.TryGetProperty("saveAsTemplate", out var saveEl) && saveEl.ValueKind == JsonValueKind.Object)
     {
-        savePath = Path.Combine(userTemplates.UserTemplatesPath, saveId + ".dwxmz");
+        if (!saveEl.TryGetProperty("id", out var idEl) || idEl.GetString() is not { Length: > 0 } saveId
+            || !templateIdPattern.IsMatch(saveId))
+            return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+                "saveAsTemplate.id is required and must match ^[A-Za-z0-9._-]+$");
+        if (!userTemplates.Writable)
+            return ErrorResult(StatusCodes.Status500InternalServerError, "TEMPLATE_STORE_UNAVAILABLE",
+                $"the user-template directory '{userTemplates.UserTemplatesPath}' is not writable; mount a volume and set USER_TEMPLATES_PATH");
         var overwrite = saveEl.TryGetProperty("overwrite", out var ovEl) && ovEl.ValueKind == JsonValueKind.True;
-        if (File.Exists(savePath) && !overwrite)
+        if (userTemplates.CuratedExists(saveId))
+            return ErrorResult(StatusCodes.Status409Conflict, "TEMPLATE_NAME_CONFLICT",
+                $"'{saveId}' is a curated template name; choose another id");
+        if (userTemplates.UserExists(saveId) && !overwrite)
             return ErrorResult(StatusCodes.Status409Conflict, "TEMPLATE_NAME_CONFLICT",
                 $"a template named '{saveId}' already exists; pass overwrite:true to replace it");
+        saveTemplateId = saveId;
+        savePath = userTemplates.UserTemplateFile(saveId);
     }
 
     // Structural validation must pass before the engine sees the document.
@@ -315,16 +351,67 @@ app.MapPost("/flowsheets/build-solve", async (HttpContext http, CancellationToke
         return Results.Json(new { error = "DOCUMENT_INVALID", issues = issuesOut }, statusCode: StatusCodes.Status400BadRequest);
     }
 
-    // Cache + queue + spawn for build-solve.
+    // Cache + queue + spawn for build-solve. Save requests bypass the cache
+    // lookup — the persistence side effect must actually run.
     var cacheKey = ResultCache.KeyForDocument(documentEl, catalogVersionKey ?? "unknown");
+    if (saveTemplateId is null && cache.TryGet(cacheKey, out var cached))
+        return Results.Content(cached, "application/json");
+
+    var outcome = await RunDocumentModeAsync(documentEl, "build-solve", TimeSpan.FromSeconds(timeoutSeconds), savePath, ct);
+    if (outcome.Status == StatusCodes.Status429TooManyRequests)
+        http.Response.Headers.RetryAfter = "5";
+
+    var body = outcome.Body;
+    if (outcome.Status == StatusCodes.Status200OK && saveTemplateId is not null && File.Exists(savePath))
+    {
+        // The worker persisted the .dwxmz; the API owns the listing metadata:
+        // provenance sidecar + the BuildReport's template block (data-model.md).
+        try
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(body)!;
+            var converged = node["converged"]?.GetValue<bool>() ?? false;
+            userTemplates.WriteSidecar(saveTemplateId, documentEl, solvedAtSave: converged);
+            node["template"] = new System.Text.Json.Nodes.JsonObject
+            {
+                ["id"] = saveTemplateId,
+                ["source"] = "user",
+                ["saved"] = true,
+            };
+            body = node.ToJsonString();
+        }
+        catch (JsonException) { /* body already validated by MinifyOrPassThrough */ }
+    }
+    if (outcome.Status == StatusCodes.Status200OK && saveTemplateId is null)
+        cache.Set(cacheKey, body);   // save requests are never cache-served (the side effect must run)
+    return Results.Content(body, "application/json", statusCode: outcome.Status);
+});
+
+// Flash calculation without a flowsheet (US4, FR-FLASH): thermodynamics run
+// in the worker's `flash` mode; the route only rejects structurally hopeless
+// requests (bad flashType/spec pairing) before paying for a process spawn.
+app.MapPost("/flash", async (HttpContext http, CancellationToken ct) =>
+{
+    JsonElement flashEl;
+    try
+    {
+        using var j = await JsonDocument.ParseAsync(http.Request.Body);
+        flashEl = j.RootElement.Clone();
+    }
+    catch (JsonException)
+    {
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "request body must be JSON");
+    }
+    if (flashEl.ValueKind != JsonValueKind.Object)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "flash request must be a JSON object");
+
+    if (FlashPrecheck(flashEl) is { } issue)
+        return ErrorResult(StatusCodes.Status400BadRequest, "FLASH_INVALID", issue);
+
+    var cacheKey = ResultCache.KeyForDocument(flashEl, "flash|" + (catalogVersionKey ?? "unknown"));
     if (cache.TryGet(cacheKey, out var cached))
         return Results.Content(cached, "application/json");
 
-    var savePayload = savePath is null ? null
-        : new { id = Path.GetFileNameWithoutExtension(savePath),
-                overwrite = requestBody.TryGetProperty("saveAsTemplate", out var sv2) && sv2.ValueKind == JsonValueKind.Object
-                            && sv2.TryGetProperty("overwrite", out var ov) && ov.ValueKind == JsonValueKind.True };
-    var outcome = await RunDocumentModeAsync(documentEl, "build-solve", TimeSpan.FromSeconds(timeoutSeconds), savePath, ct);
+    var outcome = await RunDocumentModeAsync(flashEl, "flash", TimeSpan.FromSeconds(defaultTimeout), null, ct, payloadKey: "flash");
     if (outcome.Status == StatusCodes.Status429TooManyRequests)
         http.Response.Headers.RetryAfter = "5";
     if (outcome.Status == StatusCodes.Status200OK)
@@ -332,10 +419,76 @@ app.MapPost("/flowsheets/build-solve", async (HttpContext http, CancellationToke
     return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
 });
 
-// Document-mode worker spawn: writes {mode, document, saveAsTemplate?, savePath?}
+static string? FlashPrecheck(JsonElement flash)
+{
+    bool Has(string name) => flash.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.Object;
+    if (!flash.TryGetProperty("compounds", out var comps) || comps.ValueKind != JsonValueKind.Array
+        || comps.GetArrayLength() == 0)
+        return "compounds must be a non-empty array";
+    if (!flash.TryGetProperty("composition", out var compo) || compo.ValueKind != JsonValueKind.Object)
+        return "composition is required";
+    var flashType = flash.TryGetProperty("flashType", out var ftEl) && ftEl.ValueKind == JsonValueKind.String
+        ? ftEl.GetString()!.ToUpperInvariant() : "(missing)";
+    return flashType switch
+    {
+        "TP" => Has("temperature") && Has("pressure") ? null : "TP flash requires temperature and pressure specs",
+        "PH" => Has("pressure") && Has("enthalpy") ? null : "PH flash requires pressure and enthalpy specs",
+        "PS" => Has("pressure") && Has("entropy") ? null : "PS flash requires pressure and entropy specs",
+        _ => $"flashType '{flashType}' not supported (TP|PH|PS)",
+    };
+}
+
+// PFD rendering (US6, FR-PFD): worker `pfd` mode returns {pngBase64}; the
+// API decodes to binary image/png. Render failures stay JSON (422).
+app.MapPost("/flowsheets/pfd", async (HttpContext http, CancellationToken ct) =>
+{
+    JsonElement requestBody;
+    try
+    {
+        using var j = await JsonDocument.ParseAsync(http.Request.Body);
+        requestBody = j.RootElement.Clone();
+    }
+    catch (JsonException)
+    {
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "request body must be JSON");
+    }
+    if (!requestBody.TryGetProperty("document", out var documentEl) || documentEl.ValueKind != JsonValueKind.Object)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "document is required and must be a JSON object");
+
+    var outcome = await RunDocumentModeAsync(documentEl, "pfd", TimeSpan.FromSeconds(defaultTimeout), null, ct);
+    return PngOrError(http, outcome);
+});
+
+app.MapGet("/templates/{id}/pfd.png", async (string id, HttpContext http, CancellationToken ct) =>
+{
+    var (templateFile, error) = ResolveTemplate(id);
+    if (error is not null) return error;
+
+    var outcome = await RunCaseAsync(id, templateFile!, [], TimeSpan.FromSeconds(defaultTimeout), ct, mode: "pfd");
+    return PngOrError(http, outcome);
+});
+
+static IResult PngOrError(HttpContext http, CaseOutcome outcome)
+{
+    if (outcome.Status == StatusCodes.Status429TooManyRequests)
+        http.Response.Headers.RetryAfter = "5";
+    if (outcome.Status != StatusCodes.Status200OK)
+        return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
+    try
+    {
+        var b64 = System.Text.Json.Nodes.JsonNode.Parse(outcome.Body)?["pngBase64"]?.GetValue<string>();
+        if (b64 is { Length: > 0 })
+            return Results.Bytes(Convert.FromBase64String(b64), "image/png");
+    }
+    catch (Exception) { /* fall through to RENDER_FAILED */ }
+    return Results.Content(ErrorBody("RENDER_FAILED", "worker returned no image data"),
+        "application/json", statusCode: StatusCodes.Status422UnprocessableEntity);
+}
+
+// Document-mode worker spawn: writes {mode, document|flash, savePath?}
 // and maps exit codes (reusing the same concurrency gate + admission control as /solve).
 // Worker payload shapes mirror the FakeWorker's expectations.
-async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, TimeSpan timeout, string? savePath, CancellationToken ct)
+async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, TimeSpan timeout, string? savePath, CancellationToken ct, string payloadKey = "document")
 {
     var solveId = Guid.NewGuid().ToString("N")[..8];
     var clock = Stopwatch.StartNew();
@@ -354,7 +507,7 @@ async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, 
     var jobFile = Path.Combine(Path.GetTempPath(), $"dwsim-job-{Guid.NewGuid():N}.json");
     try
     {
-        var job = new Dictionary<string, object?> { ["mode"] = mode, ["document"] = document };
+        var job = new Dictionary<string, object?> { ["mode"] = mode, [payloadKey] = document };
         if (savePath is not null) job["savePath"] = savePath;
         await File.WriteAllTextAsync(jobFile, JsonSerializer.Serialize(job, Program.JsonOpts), ct);
 
@@ -393,10 +546,18 @@ async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, 
                 case 0:
                     LogOutcome("ok");
                     return new(StatusCodes.Status200OK, MinifyOrPassThrough(stdout, "WORKER_CRASH", "worker returned an invalid response"));
+                case 2:
+                    LogOutcome("INVALID_INPUT");
+                    return new(StatusCodes.Status400BadRequest,
+                        WorkerErrorOrDefault(stdout, "INVALID_REQUEST", "worker rejected the request input"));
                 case 4:
                     LogOutcome("BUILD_FAILED");
                     return new(StatusCodes.Status422UnprocessableEntity,
                         WorkerErrorOrDefault(stdout, "BUILD_FAILED", "engine rejected construction"));
+                case 5:
+                    LogOutcome("RENDER_FAILED");
+                    return new(StatusCodes.Status422UnprocessableEntity,
+                        WorkerErrorOrDefault(stdout, "RENDER_FAILED", "PFD rendering failed"));
                 default:
                     app.Logger.LogError("docmode worker crashed (exit {Code}) for mode {Mode}: {Stderr}",
                         proc.ExitCode, mode, stderr);
@@ -455,9 +616,9 @@ app.MapPost("/compare", async (CompareRequest req, HttpContext http, Cancellatio
     var (templateFile, error) = ResolveTemplate(req.TemplateId);
     if (error is not null) return error;
 
-    if (req.Cases is not { Count: >= 1 and <= 10 })
+    if (req.Cases is not { Count: >= 1 and <= 25 })
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
-            "cases must contain between 1 and 10 entries");
+            "cases must contain between 1 and 25 entries");
 
     // Rough whole-request admission check; per-case races still degrade to a
     // per-case QUEUE_FULL error rather than failing the set.
@@ -496,10 +657,99 @@ app.MapPost("/compare", async (CompareRequest req, HttpContext http, Cancellatio
     return Results.Content(System.Text.Encoding.UTF8.GetString(buffer.ToArray()), "application/json");
 });
 
+// Single-variable optimization (US7, FR-OPT): golden-section over the normal
+// solve pipeline — every evaluation is an ordinary cached /solve case, run
+// sequentially (the search is inherently sequential).
+app.MapPost("/optimize", async (OptimizeRequest req, HttpContext http, CancellationToken ct) =>
+{
+    var (templateFile, error) = ResolveTemplate(req.TemplateId);
+    if (error is not null) return error;
+
+    if (req.Variable is not { } variable || string.IsNullOrEmpty(variable.Object) || string.IsNullOrEmpty(variable.Property))
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "variable { object, property, min, max } is required");
+    if (!(variable.Min < variable.Max) || !double.IsFinite(variable.Min) || !double.IsFinite(variable.Max))
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "variable.min must be strictly less than variable.max");
+    if (req.Objective is not { } objective || string.IsNullOrEmpty(objective.Object) || string.IsNullOrEmpty(objective.Property))
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "objective { object, property, direction } is required");
+    if (objective.Direction is not ("minimize" or "maximize"))
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "objective.direction must be 'minimize' or 'maximize'");
+    if (req.MaxEvaluations is < 2 or > 30)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "maxEvaluations must be between 2 and 30");
+    var maxEvaluations = req.MaxEvaluations ?? 20;
+    var tolerance = req.Tolerance is > 0 ? req.Tolerance.Value : (variable.Max - variable.Min) * 1e-3;
+    var timeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
+
+    var outcome = await Optimizer.GoldenSectionAsync(
+        variable.Min, variable.Max, tolerance, maxEvaluations,
+        maximize: objective.Direction == "maximize",
+        evaluate: async value =>
+        {
+            var overrides = new List<PropertyOverride>
+                { new(variable.Object, variable.Property, value, variable.Unit) };
+            var solve = await RunCaseAsync(req.TemplateId!, templateFile!, overrides, timeout, ct);
+            if (solve.Status != StatusCodes.Status200OK)
+                return new OptEvaluation(value, null, false, solve.Body);
+            var converged = false;
+            try
+            {
+                converged = JsonSerializer.Deserialize<JsonElement>(solve.Body)
+                    .TryGetProperty("converged", out var cEl) && cEl.ValueKind == JsonValueKind.True;
+            }
+            catch (JsonException) { }
+            var objectiveValue = converged
+                ? Optimizer.ExtractObjective(solve.Body, objective.Object, objective.Property)
+                : null;
+            return new OptEvaluation(value, objectiveValue, converged && objectiveValue is not null, solve.Body);
+        });
+
+    if (outcome.Best is null)
+        return ErrorResult(StatusCodes.Status422UnprocessableEntity, "OPTIMIZATION_INFEASIBLE",
+            $"no evaluation converged with a readable objective '{objective.Object}.{objective.Property}' "
+            + $"in [{variable.Min}, {variable.Max}] after {outcome.Evaluations.Count} evaluations");
+
+    // best.result is the raw SolveResult body — splice it in as JSON.
+    using var buffer = new MemoryStream();
+    using (var w = new System.Text.Json.Utf8JsonWriter(buffer))
+    {
+        w.WriteStartObject();
+        w.WritePropertyName("best");
+        w.WriteStartObject();
+        w.WriteNumber("value", outcome.Best.Value);
+        if (outcome.Best.ObjectiveValue is double bo) w.WriteNumber("objectiveValue", bo);
+        w.WritePropertyName("result");
+        using (var doc = JsonDocument.Parse(outcome.Best.Body)) doc.RootElement.WriteTo(w);
+        w.WriteEndObject();
+        w.WritePropertyName("evaluations");
+        w.WriteStartArray();
+        foreach (var e in outcome.Evaluations)
+        {
+            w.WriteStartObject();
+            w.WriteNumber("value", e.Value);
+            if (e.ObjectiveValue is double ov) w.WriteNumber("objectiveValue", ov);
+            else w.WriteNull("objectiveValue");
+            w.WriteBoolean("converged", e.Converged);
+            w.WriteEndObject();
+        }
+        w.WriteEndArray();
+        w.WriteBoolean("converged", outcome.Converged);
+        w.WriteString("stoppedReason", outcome.StoppedReason);
+        w.WriteEndObject();
+    }
+    return Results.Content(System.Text.Encoding.UTF8.GetString(buffer.ToArray()), "application/json");
+});
+
 app.Run("http://0.0.0.0:8080");
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+// Curated templates win on id collision (saves reject curated names, so a
+// collision can't be created through the API). User templates join every
+// spec-001 pipeline — /solve, /compare, /templates/{id}/objects (US3).
 (string? File, IResult? Error) ResolveTemplate(string? id)
 {
     if (string.IsNullOrEmpty(id) || !templateIdPattern.IsMatch(id))
@@ -512,8 +762,12 @@ app.Run("http://0.0.0.0:8080");
             "templateId escapes the templates directory"));
 
     if (!File.Exists(file))
+    {
+        var userFile = userTemplates.UserTemplateFile(id);
+        if (File.Exists(userFile)) return (userFile, null);
         return (null, ErrorResult(StatusCodes.Status404NotFound, "TEMPLATE_NOT_FOUND",
             $"unknown template '{id}'"));
+    }
 
     return (file, null);
 }
@@ -624,7 +878,7 @@ async Task<CaseOutcome> RunCaseAsync(string templateId, string templateFile,
                         return new(StatusCodes.Status500InternalServerError,
                             ErrorBody("WORKER_CRASH", "simulation worker returned an invalid response"));
                     }
-                    if (converged || mode == "inspect")   // inventories are pure functions of the template file
+                    if (converged || mode is "inspect" or "pfd")   // inventories/renders are pure functions of the template file
                         cache.Set(cacheKey, body);
                     LogOutcome(converged ? "ok" : "not-converged");
                     return new(StatusCodes.Status200OK, body);
@@ -638,6 +892,11 @@ async Task<CaseOutcome> RunCaseAsync(string templateId, string templateFile,
                     LogOutcome("TEMPLATE_LOAD_FAILED");
                     return new(StatusCodes.Status422UnprocessableEntity,
                         WorkerErrorOrDefault(stdout, "TEMPLATE_LOAD_FAILED", "engine could not load the template"));
+
+                case 5:   // PFD render failed (pfd mode only)
+                    LogOutcome("RENDER_FAILED");
+                    return new(StatusCodes.Status422UnprocessableEntity,
+                        WorkerErrorOrDefault(stdout, "RENDER_FAILED", "PFD rendering failed"));
 
                 default:  // crash — detail stays in server logs only
                     app.Logger.LogError("worker crashed (exit {Code}) for template '{Template}': {Stderr}",
@@ -731,6 +990,10 @@ static string WorkerErrorOrDefault(string stdout, string fallbackCode, string fa
 record WorkerRun(int? ExitCode, string Stdout, string Stderr);
 record SolveRequest(string TemplateId, List<PropertyOverride>? Overrides, int? TimeoutSeconds);
 record CompareRequest(string TemplateId, Dictionary<string, List<PropertyOverride>?>? Cases, int? TimeoutSeconds);
+record OptimizeVariable(string Object, string Property, string? Unit, double Min, double Max);
+record OptimizeObjective(string Object, string Property, string Direction);
+record OptimizeRequest(string? TemplateId, OptimizeVariable? Variable, OptimizeObjective? Objective,
+    double? Tolerance, int? MaxEvaluations, int? TimeoutSeconds);
 public record PropertyOverride(string Object, string Property, double Value, string? Unit);
 record CaseOutcome(int Status, string Body);
 

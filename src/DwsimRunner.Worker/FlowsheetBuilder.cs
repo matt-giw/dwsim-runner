@@ -176,6 +176,11 @@ public static class FlowsheetBuilder
 
             try
             {
+                if (ColumnConfigurator.TryConnect(unitObj, port.Name, streamObj, unitDoc))
+                {
+                    connectionsMade++;
+                    continue;
+                }
                 var isEnergy = streamDoc.Kind == "energyStream";
                 if (isFeed && !isEnergy) unitObj.ConnectFeedMaterialStream(streamObj, port.Index);
                 else if (isFeed) unitObj.ConnectFeedEnergyStream(streamObj, port.Index);
@@ -248,6 +253,9 @@ public static class FlowsheetBuilder
                     Error("INVALID_PARAMETER_VALUE", o.Tag, $"cannot set '{name}' on '{o.Tag}': {ex.Message}");
                 }
             }
+            if (o.Type == "distillationColumn")
+                try { ColumnConfigurator.Finish(so); }
+                catch (Exception ex) { Error("INVALID_PARAMETER_VALUE", o.Tag, $"column pressure profile on '{o.Tag}': {ex.Message}"); }
         }
 
         // ── reactions ──────────────────────────────────────────────────────
@@ -269,10 +277,19 @@ public static class FlowsheetBuilder
     // the candidate .NET property names, then the DWSIM generic property bag.
     private static void ApplyParameter(ISimulationObject so, FlowObject o, UnitOpDef def, ParamDef p, JsonElement raw)
     {
-        if (def.Type is "distillationColumn" && p.Name is "feedStage" or "refluxRatio" or "distillateMolarFlow")
+        if (def.Type is "distillationColumn" && ColumnConfigurator.Handles(p.Name))
         {
             ColumnConfigurator.Apply(so, p.Name, raw);
             return;
+        }
+        // Reactors: an explicit outletTemperature implies OutletTemperature
+        // operating mode — otherwise the engine ignores the setpoint and runs
+        // adiabatic (its default).
+        if (def.Type.StartsWith("reactor", StringComparison.Ordinal) && p.Name == "outletTemperature")
+        {
+            var modeProp = so.GetType().GetProperty("ReactorOperationMode");
+            if (modeProp is not null)
+                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletTemperature"));
         }
         if (def.Type is "splitter" && p.Name == "splitRatio1")
         {
@@ -352,16 +369,62 @@ public static class FlowsheetBuilder
                 {
                     "conversion" => fs.CreateConversionReaction(rx.Tag, rx.Tag, rx.Stoichiometry, rx.BaseCompound,
                         phase, rx.ConversionExpression ?? "100"),
+                    // Signature: (…, basis, units, Tapproach, lnKeq_fT). The K
+                    // source (Gibbs / expression / constant) is NOT an argument —
+                    // it is the KExprType property, configured below.
                     "equilibrium" => fs.CreateEquilibriumReaction(rx.Tag, rx.Tag, rx.Stoichiometry, rx.BaseCompound,
-                        phase, basis, rx.EquilibriumConstantSource ?? "Gibbs Energy", rx.Temperature ?? 298.15, ""),
+                        phase, basis, "Pa", 0.0, ""),
+                    // The engine indexes both order dictionaries by every
+                    // stoichiometry compound — products included (order 0).
                     "kinetic" => fs.CreateKineticReaction(rx.Tag, rx.Tag, rx.Stoichiometry,
-                        rx.DirectOrders ?? rx.Stoichiometry.Where(s => s.Value < 0).ToDictionary(s => s.Key, s => -s.Value),
-                        rx.ReverseOrders ?? [], rx.BaseCompound, phase, basis, "mol/L", "mol/[L.s]",
+                        FullOrders(rx.Stoichiometry, rx.DirectOrders, reactants: true),
+                        FullOrders(rx.Stoichiometry, rx.ReverseOrders, reactants: false),
+                        rx.BaseCompound, phase, basis, "mol/L", "mol/[L.s]",
                         rx.A ?? 1, rx.E ?? 0, 0, 0, "", ""),
                     "heterogeneouscatalytic" => fs.CreateHetCatReaction(rx.Tag, rx.Tag, rx.Stoichiometry, rx.BaseCompound,
                         phase, basis, "mol/L", "mol/[kg.s]", "", ""),
                     _ => throw new InvalidOperationException($"unknown reaction type '{rx.Type}'"),
                 };
+                // The create helpers take phase/basis as strings but do not
+                // reliably parse our document vocabulary — set the enums
+                // explicitly so "molar"/"Vapor" land where they should.
+                if (created is DWSIM.Thermodynamics.BaseClasses.Reaction cr)
+                {
+                    cr.ReactionPhase = phase.ToLowerInvariant() switch
+                    {
+                        "vapor" => DWSIM.Interfaces.Enums.ReactionPhase.Vapor,
+                        "liquid" => DWSIM.Interfaces.Enums.ReactionPhase.Liquid,
+                        _ => DWSIM.Interfaces.Enums.ReactionPhase.Mixture,
+                    };
+                    cr.ReactionBasis = basis.ToLowerInvariant() switch
+                    {
+                        "mass" or "mass fractions" => DWSIM.Interfaces.Enums.ReactionBasis.MassFrac,
+                        "partialpressure" or "partial pressure" => DWSIM.Interfaces.Enums.ReactionBasis.PartialPress,
+                        "fugacity" => DWSIM.Interfaces.Enums.ReactionBasis.Fugacity,
+                        "activity" => DWSIM.Interfaces.Enums.ReactionBasis.Activity,
+                        "molarconcentration" or "molar concentration" => DWSIM.Interfaces.Enums.ReactionBasis.MolarConc,
+                        _ => DWSIM.Interfaces.Enums.ReactionBasis.MolarFrac,
+                    };
+
+                    if (rx.Type.Equals("equilibrium", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var source = (rx.EquilibriumConstantSource ?? "Gibbs Energy").Trim();
+                        if (double.TryParse(source, System.Globalization.CultureInfo.InvariantCulture, out var keq))
+                        {
+                            cr.KExprType = DWSIM.Interfaces.Enums.KOpt.Constant;
+                            cr.ConstantKeqValue = keq;
+                        }
+                        else if (source.Contains("gibbs", StringComparison.OrdinalIgnoreCase))
+                        {
+                            cr.KExprType = DWSIM.Interfaces.Enums.KOpt.Gibbs;
+                        }
+                        else
+                        {
+                            cr.KExprType = DWSIM.Interfaces.Enums.KOpt.Expression;
+                            cr.Expression = source;   // lnKeq as f(T)
+                        }
+                    }
+                }
                 fs.AddReaction(created);
                 reactionIds[rx.Tag] = created.ID;
             }
@@ -399,6 +462,20 @@ public static class FlowsheetBuilder
                 error("BUILD_FAILED", set.Tag, $"cannot create reaction set '{set.Tag}': {ex.Message}", "reactionSets");
             }
         }
+    }
+
+    // Kinetic-order dictionaries covering every stoichiometry compound: user
+    // overrides win; reactants default to their stoichiometric order forward,
+    // everything else to 0.
+    private static Dictionary<string, double> FullOrders(
+        Dictionary<string, double> stoichiometry, Dictionary<string, double>? given, bool reactants)
+    {
+        var orders = stoichiometry.ToDictionary(
+            s => s.Key,
+            s => reactants && s.Value < 0 ? -s.Value : 0.0);
+        foreach (var (k, v) in given ?? [])
+            if (orders.ContainsKey(k)) orders[k] = v;
+        return orders;
     }
 
     // Unit → SI via the engine's own converter; bare numbers are taken as SI.

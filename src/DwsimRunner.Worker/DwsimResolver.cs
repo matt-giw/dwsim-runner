@@ -31,6 +31,21 @@ internal static class DwsimResolver
         // Native deps (libSkiaSharp, CoolProp, etc.) live alongside the managed DLLs.
         AppendToEnv("LD_LIBRARY_PATH", DwsimPath);    // linux
         AppendToEnv("DYLD_LIBRARY_PATH", DwsimPath);  // macOS
+
+        // LD_LIBRARY_PATH set after process start doesn't reach dlopen —
+        // resolve P/Invoke targets (SkiaSharp's "libSkiaSharp") explicitly.
+        AssemblyLoadContext.Default.ResolvingUnmanagedDll += (_, libName) =>
+        {
+            foreach (var candidate in new[]
+                     { libName, $"{libName}.so", $"{libName}.dylib", $"{libName}.dll",
+                       $"lib{libName}.so", $"lib{libName}.dylib" })
+            {
+                var p = Path.Combine(DwsimPath, candidate);
+                if (File.Exists(p) && System.Runtime.InteropServices.NativeLibrary.TryLoad(p, out var handle))
+                    return handle;
+            }
+            return IntPtr.Zero;
+        };
     }
 
     private static void AppendToEnv(string key, string value)

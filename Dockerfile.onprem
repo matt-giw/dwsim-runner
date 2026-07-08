@@ -15,8 +15,10 @@ ENV DWSIM_PATH=/opt/dwsim
 COPY src/ ./src/
 RUN dotnet publish src/DwsimRunner.Api    -c Release -o /out/api && \
     dotnet publish src/DwsimRunner.Worker -c Release -o /out/worker && \
-    # belt & braces: assert no DWSIM DLLs leaked into publish output
-    ! ls /out/api /out/worker | grep -qi '^DWSIM\.'
+    # belt & braces: assert nothing from the DWSIM install leaked into any
+    # publish output — DWSIM.* assemblies AND the Skia libs the Worker
+    # references for PFD rendering (002/T054; resolved from DWSIM_PATH at run).
+    ! ls /out/api /out/worker | grep -qiE '^(DWSIM\.|SkiaSharp|libSkiaSharp)'
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -42,11 +42,17 @@ int Done(int code)
 int exitCode = 0;
 string? errorDoc = null;
 bool garbage = false;
+double? objectiveInput = null;   // "__objective" override → W_comp duty = (v-42)² + 7
+bool neverConverge = false;      // "__no-converge" override → converged:false solve
 
 foreach (var ov in job.Overrides ?? [])
 {
     if (ov.Object is null) continue;
-    if (ov.Object.StartsWith("__sleep:") && int.TryParse(ov.Object["__sleep:".Length..], out var s))
+    if (ov.Object == "__objective" && ov.Value is double vObj)
+        objectiveInput = vObj;
+    else if (ov.Object == "__no-converge")
+        neverConverge = true;
+    else if (ov.Object.StartsWith("__sleep:") && int.TryParse(ov.Object["__sleep:".Length..], out var s))
         Thread.Sleep(TimeSpan.FromSeconds(s));
     else if (ov.Object.StartsWith("__exit:") && int.TryParse(ov.Object["__exit:".Length..], out var code))
     {
@@ -201,12 +207,18 @@ switch (job.Mode?.ToLowerInvariant())
         break;
 
     default:
-        Console.WriteLine("""
-        {"converged":true,"elapsedMs":5,
+        // Scripted objective for /optimize tests: a smooth parabola with its
+        // minimum at 42 (value 7), evaluated at the "__objective" override.
+        var duty = objectiveInput is double v
+            ? Math.Round((v - 42.0) * (v - 42.0) + 7.0, 6).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "11.5";
+        var solveConverged = neverConverge ? "false" : "true";
+        Console.WriteLine($$$"""
+        {"converged":{{{solveConverged}}},"elapsedMs":5,
          "streams":[{"name":"Syngas","temperatureC":26.85,"pressureBar":30.0,"massFlowKgH":115.351,
                      "molarFlowKmolH":10.8,"compositionMol":{"Hydrogen":0.666667,"Carbon monoxide":0.333333}}],
-         "energy":[{"name":"W_comp","dutyKw":11.5}],
-         "unitOps":[{"name":"Comp-1","type":"compressor","powerKw":11.5,
+         "energy":[{"name":"W_comp","dutyKw":{{{duty}}} }],
+         "unitOps":[{"name":"Comp-1","type":"compressor","powerKw":{{{duty}}},
                      "outletTemperatureC":156.9,"outletPressureBar":80.0}],
          "warnings":[]}
         """.ReplaceLineEndings(""));
