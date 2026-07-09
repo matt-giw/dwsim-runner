@@ -156,6 +156,27 @@ app.MapDelete("/templates/{id}", (string id) =>
     return Results.NoContent();
 });
 
+// GET /templates/{id}/file — stream the .dwxmz bytes (spec 011 Cut 3, D2 option a).
+// The iskra-app uses this to pull a freshly-saved user template into its Postgres
+// flow_templates table (the SaaS system of record), then DELETEs the runner-side
+// copy. Works for curated templates too so the app can mirror a reference plant
+// into a project's saved set if desired.
+app.MapGet("/templates/{id}/file", (string id) =>
+{
+    if (string.IsNullOrEmpty(id) || !templateIdPattern.IsMatch(id))
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "template id must match ^[A-Za-z0-9._-]+$");
+    var userPath = userTemplates.UserTemplateFile(id);
+    var curatedPath = Path.Combine(userTemplates.CuratedTemplatesPath, id + ".dwxmz");
+    var path = File.Exists(userPath) ? userPath
+             : File.Exists(curatedPath) ? curatedPath
+             : null;
+    if (path is null)
+        return ErrorResult(StatusCodes.Status404NotFound, "TEMPLATE_NOT_FOUND", $"unknown template '{id}'");
+    var bytes = File.ReadAllBytes(path);
+    return Results.File(bytes, "application/octet-stream", $"{id}.dwxmz");
+});
+
 // ── engine catalog (002: FR-CAT-001..004) ──────────────────────────────────
 
 app.MapGet("/catalog/compounds", (CancellationToken ct) => CatalogSection("compounds", ct));
@@ -322,9 +343,9 @@ app.MapPost("/flowsheets/build-solve", async (HttpContext http, CancellationToke
             || !templateIdPattern.IsMatch(saveId))
             return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
                 "saveAsTemplate.id is required and must match ^[A-Za-z0-9._-]+$");
-        if (!userTemplates.Writable)
-            return ErrorResult(StatusCodes.Status500InternalServerError, "TEMPLATE_STORE_UNAVAILABLE",
-                $"the user-template directory '{userTemplates.UserTemplatesPath}' is not writable; mount a volume and set USER_TEMPLATES_PATH");
+        // Spec 011 Cut 2: do NOT reject the request up-front when the store
+        // isn't writable — the solve must run regardless. A missing/writable
+        // store becomes a soft `template.saved:false` block after the solve.
         var overwrite = saveEl.TryGetProperty("overwrite", out var ovEl) && ovEl.ValueKind == JsonValueKind.True;
         if (userTemplates.CuratedExists(saveId))
             return ErrorResult(StatusCodes.Status409Conflict, "TEMPLATE_NAME_CONFLICT",
@@ -333,6 +354,10 @@ app.MapPost("/flowsheets/build-solve", async (HttpContext http, CancellationToke
             return ErrorResult(StatusCodes.Status409Conflict, "TEMPLATE_NAME_CONFLICT",
                 $"a template named '{saveId}' already exists; pass overwrite:true to replace it");
         saveTemplateId = saveId;
+        // Pre-011: savePath was null when Writable was false, which suppressed
+        // the worker save entirely. Now always attempt — the worker swallows
+        // IO errors (Modes.cs) and the API reports saved:false when the file
+        // isn't on disk after the solve.
         savePath = userTemplates.UserTemplateFile(saveId);
     }
 
@@ -362,21 +387,37 @@ app.MapPost("/flowsheets/build-solve", async (HttpContext http, CancellationToke
         http.Response.Headers.RetryAfter = "5";
 
     var body = outcome.Body;
-    if (outcome.Status == StatusCodes.Status200OK && saveTemplateId is not null && File.Exists(savePath))
+    if (outcome.Status == StatusCodes.Status200OK && saveTemplateId is not null)
     {
-        // The worker persisted the .dwxmz; the API owns the listing metadata:
-        // provenance sidecar + the BuildReport's template block (data-model.md).
+        // Spec 011 Cut 2: the save is best-effort. If the worker wrote the
+        // file, report saved:true + write the provenance sidecar. If it
+        // didn't (read-only store, IO error swallowed in Modes.cs), report a
+        // soft saved:false block — never a 500 over a directory-write issue.
         try
         {
             var node = System.Text.Json.Nodes.JsonNode.Parse(body)!;
             var converged = node["converged"]?.GetValue<bool>() ?? false;
-            userTemplates.WriteSidecar(saveTemplateId, documentEl, solvedAtSave: converged);
-            node["template"] = new System.Text.Json.Nodes.JsonObject
+            var saved = File.Exists(savePath);
+            if (saved)
             {
-                ["id"] = saveTemplateId,
-                ["source"] = "user",
-                ["saved"] = true,
-            };
+                userTemplates.WriteSidecar(saveTemplateId, documentEl, solvedAtSave: converged);
+                node["template"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["id"] = saveTemplateId,
+                    ["source"] = "user",
+                    ["saved"] = true,
+                };
+            }
+            else
+            {
+                node["template"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["id"] = saveTemplateId,
+                    ["source"] = "user",
+                    ["saved"] = false,
+                    ["reason"] = userTemplates.Writable ? "WRITE_FAILED" : "STORE_UNAVAILABLE",
+                };
+            }
             body = node.ToJsonString();
         }
         catch (JsonException) { /* body already validated by MinifyOrPassThrough */ }

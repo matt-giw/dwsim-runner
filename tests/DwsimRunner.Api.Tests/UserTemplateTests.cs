@@ -205,4 +205,41 @@ public class UserTemplateTests
         var del = await host.Client.DeleteAsync("/templates/never-existed");
         Assert.Equal(HttpStatusCode.NotFound, del.StatusCode);
     }
+
+    // Spec 011 Cut 2: a save requested against a read-only USER_TEMPLATES_PATH
+    // MUST NOT fail the solve. The solve returns 200 with the stream table and
+    // a soft `template.saved:false` block. Pre-011 this returned 500
+    // TEMPLATE_STORE_UNAVAILABLE before the engine ran.
+    [Fact]
+    public async Task Save_against_read_only_store_returns_200_with_saved_false()
+    {
+        // Read-only parent: USER_TEMPLATES_PATH points at a child of a dir we
+        // make read-only, so EnsureDirectory's CreateDirectory + write-probe
+        // fail and Writable stays false.
+        var roParent = Directory.CreateTempSubdirectory("dwsim-ro-");
+        var roUserDir = Path.Combine(roParent.FullName, "user");
+        try
+        {
+            roParent.Attributes = FileAttributes.ReadOnly;
+            using var host = new RunnerHost(new()
+            {
+                ["USER_TEMPLATES_PATH"] = roUserDir,
+            });
+
+            var resp = await host.Client.PostAsync("/flowsheets/build-solve", SaveBody(ValidDoc, "ro-demo"));
+
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var body = await resp.Content.ReadFromJsonAsync<JsonElement>(Json);
+            Assert.True(body.GetProperty("converged").GetBoolean());
+            var template = body.GetProperty("template");
+            Assert.Equal("ro-demo", template.GetProperty("id").GetString());
+            Assert.False(template.GetProperty("saved").GetBoolean());
+            Assert.Equal("STORE_UNAVAILABLE", template.GetProperty("reason").GetString());
+        }
+        finally
+        {
+            roParent.Attributes = FileAttributes.Normal;   // reset so Delete works
+            try { Directory.Delete(roParent.FullName, recursive: true); } catch { }
+        }
+    }
 }

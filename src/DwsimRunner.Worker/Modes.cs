@@ -152,16 +152,20 @@ static class Modes
         // Conflict/overwrite policy and listing metadata (sidecar, template
         // block) are owned by the API; the worker's only job is the engine
         // save. Persist even when unsolved (US3: solvedAtSave:false).
+        // Spec 011 Cut 2: a save failure MUST NOT throw — the solve result
+        // is the user's answer; the save is a best-effort side-effect. The
+        // API infers save failure from the absence of the file and reports
+        // a soft `template.saved:false` block rather than a 500.
         if (job.SavePath is { Length: > 0 } path)
         {
             try
             {
                 auto.SaveFlowsheet2(fs, path);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                throw new WorkerInputException("BUILD_FAILED",
-                    $"flowsheet built but could not be saved to '{path}': {ex.Message}");
+                // Swallow: the solve succeeded; the file won't exist, and
+                // the API sets template.saved:false in the response.
             }
         }
 

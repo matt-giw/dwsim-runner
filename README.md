@@ -64,6 +64,7 @@ All bodies are JSON, camelCase. Full contracts:
 | `GET /health` | `{ ok, dwsimPath, dwsimFound, dwsimVersion, supportedRange, versionSupported, templatesPath, templates:[...], maxConcurrent, maxEvaluations, maxTimeoutSeconds, hint? }` — one status call answers readiness + version + templates (bare curated ids) |
 | `GET /templates` | `[{ id, source:"curated"\|"user", createdUtc?, solvedAtSave? }, …]` — object-shaped listing, curated + user templates |
 | `DELETE /templates/{id}` | 204 — user templates only (403 `TEMPLATE_READONLY` for curated) |
+| `GET /templates/{id}/file` | binary `application/octet-stream` `.dwxmz` — raw flowsheet file (spec 011 Cut 3; the iskra-app pulls a saved template into its Postgres `flow_templates` table via this, then DELETEs the runner-side copy) |
 | `GET /templates/{id}/objects` | `{ objects:[{ tag, type, settableProperties }] }` — object inventory (FR-014); no solve, cached by template mtime. Discover override targets here |
 | `GET /templates/{id}/pfd.png` | binary `image/png` — rendered flowsheet diagram, cached by template mtime |
 | `POST /solve` | `{ templateId, overrides:[{object, property, value, unit?}], timeoutSeconds? }` → `{ converged, elapsedMs, streams:[…], energy:[…], unitOps:[…], warnings:[…] }` |
@@ -103,9 +104,14 @@ One worker process per job; `mode` in the job file selects the handler
 | 422 | `TEMPLATE_LOAD_FAILED` \| `BUILD_FAILED` \| `UNKNOWN_COMPOUND` \| `RENDER_FAILED` \| `OPTIMIZATION_INFEASIBLE` | engine cannot load/build/render, or no feasible optimization point |
 | 429 | `QUEUE_FULL` (+ `Retry-After`) | queue at capacity |
 | 504 | `SOLVE_TIMEOUT` | hard timeout; worker killed |
-| 500 | `WORKER_CRASH` \| `TEMPLATE_STORE_UNAVAILABLE` | unexpected failure; user-template dir not writable |
+| 500 | `WORKER_CRASH` | unexpected engine failure |
 
 Non-convergence is **not** an error: HTTP 200 with `converged:false`.
+
+A `saveAsTemplate` request against an unwritable `USER_TEMPLATES_PATH` is **not** an error
+(spec 011): the solve returns 200 and the `template` block carries `saved:false` with
+`reason: STORE_UNAVAILABLE` (or `WRITE_FAILED` if the dir is writable but the `.dwxmz` write
+itself failed). The solve is never blocked by a persistence side-effect.
 
 ## Environment variables
 
@@ -113,7 +119,7 @@ Non-convergence is **not** an error: HTTP 200 with `converged:false`.
 |---|---|---|
 | `DWSIM_PATH` | `/opt/dwsim` | DWSIM install dir (runtime + compile-time) |
 | `TEMPLATES_PATH` | `/templates` | directory of curated `.dwxmz` reference plants (read-only) |
-| `USER_TEMPLATES_PATH` | `<TEMPLATES_PATH>/user` | writable directory for user-saved templates (`.dwxmz` + `.doc.json` provenance sidecars). Mount a volume; saves fail with `TEMPLATE_STORE_UNAVAILABLE` when unwritable |
+| `USER_TEMPLATES_PATH` | `<TEMPLATES_PATH>/user` | writable directory for user-saved templates (`.dwxmz` + `.doc.json` provenance sidecars). On-prem only (steering §10 Q4); in SaaS the app's Postgres `flow_templates` table is the system of record and this path is unused for user state. An unwritable dir no longer fails the solve — see the error-taxonomy note above. |
 | `WORKER_PATH` | `/app/worker/DwsimRunner.Worker.dll` | worker assembly |
 | `SOLVE_TIMEOUT_SECONDS` | `60` | hard per-solve timeout (cap 600) |
 | `MAX_CONCURRENT_SOLVES` | `6` | worker process pool size (SC-006 target) |
