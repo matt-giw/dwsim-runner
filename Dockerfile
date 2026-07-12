@@ -7,9 +7,14 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# DWSIM Linux release binaries, extracted into ./dwsim/ before building:
-#   e.g. download from https://dwsim.org → extract → ./dwsim/DWSIM.Automation.dll ...
-COPY dwsim/ /opt/dwsim/
+# DWSIM's Linux release binaries are gitignored and never redistributed, so they
+# cannot be COPY'd from the build context on a clean clone (a CI or Railway build
+# has no ./dwsim/). Fetch them here instead — same pinned release the local
+# script pulls, cached as one layer, extracted straight into the image.
+COPY scripts/fetch-dwsim.sh ./scripts/
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && scripts/fetch-dwsim.sh /opt/dwsim
 ENV DWSIM_PATH=/opt/dwsim
 
 COPY src/ ./src/

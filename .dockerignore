@@ -2,6 +2,8 @@
 publish/
 **/bin/
 **/obj/
-scripts/
+# dwsim/ is fetched inside the build (Dockerfile), never uploaded as context.
+# scripts/ is NOT ignored: the build needs scripts/fetch-dwsim.sh.
+dwsim/
 *.md
 .DS_Store
