@@ -374,8 +374,25 @@ static class Modes
             phases.Add(BuildPhase("Solid", sf, result.GetSolidPhaseMoleFractions() ?? [], compoundsInOrder));
 
         // Engine-side T/P/h/s; null when the calc didn't converge on them.
-        double? enthalpyKJKg = result.CalculatedEnthalpy is double h && double.IsFinite(h) ? h / 1000.0 : null;
-        double? entropyKJKgK = result.CalculatedEntropy is double se && double.IsFinite(se) ? se / 1000.0 : null;
+        //
+        // NO UNIT CONVERSION. DWSIM's CalculatedEnthalpy/CalculatedEntropy are ALREADY kJ/kg and
+        // kJ/kg.K — the same units RequireSi converts the PH/PS *inputs* into, a few lines up.
+        // These two lines divided by 1000, so the response carried MJ/kg under a kJ/kg field name.
+        //
+        // The round trip made it unmistakable: a PH flash fed h = 63 kJ/kg at 3 bar solved to
+        // 14.94 C — correct — and then reported enthalpyKJKg = 0.063 for that same state. Input
+        // and output disagreed by 1000x about what the field meant.
+        //
+        // Why this mattered more than a display glitch: a duty computed from it is 1000x too small
+        // and entirely self-consistent (Q = 0.052 kW instead of 52 kW), with no error and no
+        // warning — a number an engineer can put on a datasheet. It surfaced only because a
+        // caller happened to cross-check against Cp*dT.
+        //
+        // Entropy was worse than mislabelled, it was DESTROYED: water at 15 C has
+        // s = 0.2244 kJ/kg.K, which /1000 makes 0.000224, which Math.Round(_, 3) below turns
+        // into 0. Multiplying cannot recover a value that has been rounded away.
+        double? enthalpyKJKg = result.CalculatedEnthalpy is double h && double.IsFinite(h) ? h : null;
+        double? entropyKJKgK = result.CalculatedEntropy is double se && double.IsFinite(se) ? se : null;
 
         return new FlashResult(
             VaporFraction: Math.Round(vaporFraction, 6),
