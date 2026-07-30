@@ -16,8 +16,20 @@ namespace DwsimRunner.Worker;
 
 public sealed record PortDef(string Name, string Direction, string Accepts, bool Required, int Index);
 public sealed record ParamDef(string Name, string UnitType, bool Required, string[] EngineProperties);
+/// <param name="ExternalId">
+/// Set ONLY for an EXTERNAL unit operation, and it is the engine's registry key ("Water
+/// Electrolyzer"), not the wire type.
+///
+/// DWSIM builds a unit op two ways and the difference is not cosmetic. The ordinary path is
+/// `AddObject(ObjectType, x, y, tag)`. An external op needs `AddObject(ObjectType.External, x, y,
+/// ID, tag)` — the five-argument overload — because the id is what selects it from the plugin
+/// registry. Measured: `AddObject(ObjectType.WaterElectrolyzer, ...)` RETURNS AN OBJECT, so it looks
+/// like it worked, and that object has ZERO graphic connectors, so the first attempt to connect its
+/// water inlet fails with "Index was out of range". Constructed-but-unconnectable is the shape to
+/// watch for, and it is why the engine inventory reports this type instantiable.
+/// </param>
 public sealed record UnitOpDef(string Type, string DisplayName, ObjectType ObjectType,
-    PortDef[] Ports, ParamDef[] Parameters, bool RequiresReactionSet);
+    PortDef[] Ports, ParamDef[] Parameters, bool RequiresReactionSet, string? ExternalId = null);
 
 public static class UnitOpCatalog
 {
@@ -38,7 +50,11 @@ public static class UnitOpCatalog
 
         new UnitOpDef("splitter", "Stream Splitter", ObjectType.Splitter,
             [In("Inlet", 0), Out("Outlet 1", 0), Out("Outlet 2", 1, required: false), Out("Outlet 3", 2, required: false)],
-            [P("splitRatio1", "dimensionless", false, "Ratios")], false),
+            // 099 US5 — `StreamFlowSpec`, not `StreamMassFlowSpec`: the latter is the OpMode ENUM
+            // MEMBER, and the plan named the mode where the property goes. The escape hatch selects
+            // the mode; this is the setpoint it reads.
+            [P("splitRatio1", "dimensionless", false, "Ratios"),
+             P("outletMassFlow", "massFlow", false, "StreamFlowSpec")], false),
 
         new UnitOpDef("separator", "Gas-Liquid Separator", ObjectType.Vessel,
             [In("Inlet", 0), Out("Vapor Outlet", 0), Out("Liquid Outlet", 1), EnergyIn("Energy Inlet", 6)],
@@ -60,7 +76,12 @@ public static class UnitOpCatalog
             [P("outletTemperature", "temperature", false, "OutletTemperature"),
              P("heatDuty", "power", false, "DeltaQ"),
              P("pressureDrop", "pressure", false, "DeltaP"),
-             P("efficiency", "dimensionless", false, "Eficiencia", "Efficiency")], false),
+             P("efficiency", "dimensionless", false, "Eficiencia", "Efficiency"),
+             // 099 US5 — COOLER ONLY. `OutletVaporFraction` is declared on `Cooler` and NOT on
+             // `Heater`, measured: setting it on a heater moved nothing, because the escape hatch
+             // selected the mode and the reflection then had no property to write. A parameter on
+             // the wrong type is the silent-setpoint bug wearing the right name.
+             P("outletVaporFraction", "dimensionless", false, "OutletVaporFraction")], false),
 
         new UnitOpDef("heatExchanger", "Heat Exchanger", ObjectType.HeatExchanger,
             [In("Inlet 1", 0), In("Inlet 2", 1), Out("Outlet 1", 0), Out("Outlet 2", 1)],
@@ -83,6 +104,58 @@ public static class UnitOpCatalog
              P("overallHeatTransferCoefficient", "heatTransferCoefficient", false, "OverallCoefficient"),
              P("area", "area", false, "Area")], false),
 
+        // Spec 099 US1 — the P0 entry. `ElectrolyzerStack` carried "DWSIM has no electrolyzer unit
+        // op" for a year; the engine has shipped this since 9.0, in the DLL already vendored here.
+        //
+        // NO ENERGY PORT, deliberately. The engine takes its power on input connector 1 and leaves
+        // the graphic energy connector inactive, but the document's standing invariant is that an
+        // energy port is a PARAMETER, never a nozzle (spec 024 FR-009). So `powerInput` is a
+        // parameter with no engine property, and `ElectrolyzerConfigurator` synthesizes the energy
+        // stream the engine demands. It is `required: true` because absence is not a degraded solve
+        // — it is a null dereference inside `Calculate`, and the runner must refuse first.
+        //
+        // `voltage` is the STACK TOTAL, not the per-cell voltage. `CellVoltage` is settable on the
+        // engine class and is REPORTED — every property on this type has a setter, so a setter proves
+        // nothing about what the engine reads. Binding a datasheet's 1.9 V here would send 1.9 where
+        // ~988 is expected, converge, and return a current 520x too large. The app derives the total.
+        //
+        // `efficiency` binds `InputEfficiency`, NOT `Efficiency`: the latter is what the engine
+        // reports back. Same trap as the voltage pair, one property apart.
+        new UnitOpDef("waterElectrolyzer", "Water Electrolyzer", ObjectType.WaterElectrolyzer,
+            [In("Water Inlet", 0), Out("Hydrogen-Rich Outlet", 0), Out("Oxygen-Rich Outlet", 1)],
+            [P("powerInput", "power", true),
+             P("voltage", "voltage", false, "Voltage"),
+             P("cellCount", "integer", false, "NumberOfCells"),
+             P("efficiency", "dimensionless", false, "InputEfficiency")], false,
+            ExternalId: "Water Electrolyzer"),
+
+        // Spec 099 US2 — one engine type un-strands THREE equipment classes: ReverseOsmosisUnit,
+        // Adsorber and IonExchanger all draw today and vanish from every solve, because a
+        // per-compound split is exactly what they are and no exposed type does one.
+        //
+        // OUTLET NAMES ARE POSITIONAL ON PURPOSE. Not vapor/liquid, not permeate/reject: the
+        // mapper's NOZZLE-side hints already match `permeate` as a vapour hint and `reject` as a
+        // liquid one, so a vapor/liquid-shaped CATALOG name would make the name-matching assignment
+        // compete with the positional plan, and which won would depend on regex details rather than
+        // on the engineer's drawing. `Outlet 2` is optional so an IonExchanger — one in, one out —
+        // leaves nothing unpiped.
+        //
+        // `separationSpecs` is a per-compound DICTIONARY, which name→property reflection cannot
+        // express, so it has a bespoke configurator like the column and the electrolyzer.
+        //
+        // BOTH OUTLETS ARE REQUIRED, and 099's contract said otherwise. It made `Outlet 2` optional
+        // so an IonExchanger — one in, one out — would leave nothing unpiped, judging a synthesized
+        // product stream to be "noise for the common case". Measured: with the second outlet
+        // unpiped the engine throws a NullReferenceException from inside `Calculate` — it
+        // dereferences that outlet unconditionally, exactly as the electrolyzer does its power.
+        // So the mapper synthesizes the stream, which it already does for any unpiped required
+        // outlet and reports as INFORMATIONAL. The "noise" is a named, harmless drop; the
+        // alternative was a .NET stack trace.
+        new UnitOpDef("componentSeparator", "Component Separator", ObjectType.ComponentSeparator,
+            [In("Inlet", 0), Out("Outlet 1", 0), Out("Outlet 2", 1)],
+            [P("specifiedStreamIndex", "integer", false, "SpecifiedStreamIndex"),
+             P("separationSpecs", "string", false)], false),
+
         new UnitOpDef("pump", "Pump", ObjectType.Pump,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("outletPressure", "pressure", false, "Pout", "POut"),
@@ -104,7 +177,12 @@ public static class UnitOpCatalog
         new UnitOpDef("valve", "Valve", ObjectType.Valve,
             [In("Inlet", 0), Out("Outlet", 0)],
             [P("outletPressure", "pressure", false, "OutletPressure", "Pout", "POut"),
-             P("pressureDrop", "pressure", false, "DeltaP")], false),
+             P("pressureDrop", "pressure", false, "DeltaP"),
+             // 099 US5. ONE `Kv`, not the `Kv_Liquid`/`Kv_Gas` pair the plan named — the engine has
+             // a single flow coefficient and reports an `ActualKv` back. Dimensionless: a Kv is a
+             // number read off a valve datasheet.
+             P("kv", "dimensionless", false, "Kv"),
+             P("openingPct", "dimensionless", false, "OpeningPct")], false),
 
         new UnitOpDef("pipe", "Pipe Segment", ObjectType.Pipe,
             [In("Inlet", 0), Out("Outlet", 0)],
