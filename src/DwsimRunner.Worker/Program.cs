@@ -100,8 +100,14 @@ record ErrorDoc(string Error, string Message, string? Detail);
 record BuildErrorDoc(string Error, string Message, List<IssueOut> Issues);
 record IssueOut(string Severity, string Code, string? Tag, string? Path, string Message);
 
+// DensityKgM3 last, so every named-argument construction is unaffected.
+//
+// Harvested because iskra's eval tier could not verify a density it asks the co-pilot to report:
+// nothing on the wire carried one, so the agent answered ~997 kg/m3 for water at 25 C FROM MEMORY
+// and the check could only be recorded as unverifiable. DWSIM knows it; we simply never picked it up.
 record StreamRow(string Name, string? Phase, double? TemperatureC, double? PressureBar,
-                 double? MassFlowKgH, double? MolarFlowKmolH, Dictionary<string, double>? CompositionMol);
+                 double? MassFlowKgH, double? MolarFlowKmolH, Dictionary<string, double>? CompositionMol,
+                 double? DensityKgM3 = null);
 record EnergyRow(string Name, double? DutyKw);
 record UnitOpRow(string Name, string Type, double? PowerKw, double? DutyKw,
                  double? OutletTemperatureC, double? OutletPressureBar);
@@ -250,19 +256,11 @@ static class Solver
             {
                 case DWSIM.Thermodynamics.Streams.MaterialStream ms:
                 {
-                    var comp = new Dictionary<string, double>();
-                    foreach (var c in ms.Phases[0].Compounds.Values)
-                        if (c.MoleFraction is double mf && double.IsFinite(mf) && mf > 1e-9)
-                            comp[c.Name] = Math.Round(mf, 6);
-
-                    streams.Add(new StreamRow(
-                        Name:           ms.GraphicObject.Tag,
-                        Phase:          ms.Phases[0].Properties.molarfraction == 1 ? "vapor" : null, // simplistic; refine per phase report
-                        TemperatureC:   Round(ms.Phases[0].Properties.temperature, -273.15),
-                        PressureBar:    Round(ms.Phases[0].Properties.pressure, 0, 1e-5),
-                        MassFlowKgH:    Round(ms.Phases[0].Properties.massflow, 0, 3600),
-                        MolarFlowKmolH: Round(ms.Phases[0].Properties.molarflow, 0, 3.6),
-                        CompositionMol: comp));
+                    // ONE harvest, shared with build-solve (Modes.HarvestStream). This was a
+                    // byte-for-byte copy of it, which is how a field gets added to one solve path
+                    // and not the other — the same duplication-drift this repo has been bitten by
+                    // before. Two callers, one definition.
+                    streams.Add(Modes.HarvestStream(ms));
                     break;
                 }
                 case DWSIM.UnitOperations.Streams.EnergyStream es:

@@ -170,7 +170,7 @@ switch (job.Mode?.ToLowerInvariant())
         Console.WriteLine($$$"""
         {"converged":{{{converged}}},"elapsedMs":7,
          "build":{"objectsCreated":{{{Math.Max(docTags.Count, 1)}}},"connectionsMade":3,"elapsedMs":2},
-         "streams":[{"name":"VAP","temperatureC":0.0,"pressureBar":50.0,"massFlowKgH":62.1,
+         "streams":[{"name":"VAP","temperatureC":0.0,"pressureBar":50.0,"massFlowKgH":62.1,"densityKgM3":48.2,
                      "molarFlowKmolH":3.4,"compositionMol":{"Methane":0.58,"Ethane":0.42}},
                     {"name":"LIQ","temperatureC":0.0,"pressureBar":50.0,"massFlowKgH":37.9,
                      "molarFlowKmolH":1.4,"compositionMol":{"Methane":0.11,"Ethane":0.89}}],
@@ -192,7 +192,7 @@ switch (job.Mode?.ToLowerInvariant())
         {"vaporFraction":0.83,"temperatureC":0.0,"pressureBar":10.0,
          "phases":[{"phase":"Vapor","molarFraction":0.83,"composition":{"Methane":0.58,"Ethane":0.42}},
                    {"phase":"Liquid","molarFraction":0.17,"composition":{"Methane":0.11,"Ethane":0.89}}],
-         "enthalpyKJKg":-120.4,"entropyKJKgK":-1.02}
+         "enthalpyKJKg":-120.4,"entropyKJKgK":-1.02,"densityKgM3":52.31}
         """.ReplaceLineEndings(""));
         break;
 
