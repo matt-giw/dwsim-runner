@@ -50,7 +50,11 @@ public static class UnitOpCatalog
 
         new UnitOpDef("splitter", "Stream Splitter", ObjectType.Splitter,
             [In("Inlet", 0), Out("Outlet 1", 0), Out("Outlet 2", 1, required: false), Out("Outlet 3", 2, required: false)],
-            [P("splitRatio1", "dimensionless", false, "Ratios")], false),
+            // 099 US5 — `StreamFlowSpec`, not `StreamMassFlowSpec`: the latter is the OpMode ENUM
+            // MEMBER, and the plan named the mode where the property goes. The escape hatch selects
+            // the mode; this is the setpoint it reads.
+            [P("splitRatio1", "dimensionless", false, "Ratios"),
+             P("outletMassFlow", "massFlow", false, "StreamFlowSpec")], false),
 
         new UnitOpDef("separator", "Gas-Liquid Separator", ObjectType.Vessel,
             [In("Inlet", 0), Out("Vapor Outlet", 0), Out("Liquid Outlet", 1), EnergyIn("Energy Inlet", 6)],
@@ -72,7 +76,12 @@ public static class UnitOpCatalog
             [P("outletTemperature", "temperature", false, "OutletTemperature"),
              P("heatDuty", "power", false, "DeltaQ"),
              P("pressureDrop", "pressure", false, "DeltaP"),
-             P("efficiency", "dimensionless", false, "Eficiencia", "Efficiency")], false),
+             P("efficiency", "dimensionless", false, "Eficiencia", "Efficiency"),
+             // 099 US5 — COOLER ONLY. `OutletVaporFraction` is declared on `Cooler` and NOT on
+             // `Heater`, measured: setting it on a heater moved nothing, because the escape hatch
+             // selected the mode and the reflection then had no property to write. A parameter on
+             // the wrong type is the silent-setpoint bug wearing the right name.
+             P("outletVaporFraction", "dimensionless", false, "OutletVaporFraction")], false),
 
         new UnitOpDef("heatExchanger", "Heat Exchanger", ObjectType.HeatExchanger,
             [In("Inlet 1", 0), In("Inlet 2", 1), Out("Outlet 1", 0), Out("Outlet 2", 1)],
@@ -168,7 +177,12 @@ public static class UnitOpCatalog
         new UnitOpDef("valve", "Valve", ObjectType.Valve,
             [In("Inlet", 0), Out("Outlet", 0)],
             [P("outletPressure", "pressure", false, "OutletPressure", "Pout", "POut"),
-             P("pressureDrop", "pressure", false, "DeltaP")], false),
+             P("pressureDrop", "pressure", false, "DeltaP"),
+             // 099 US5. ONE `Kv`, not the `Kv_Liquid`/`Kv_Gas` pair the plan named — the engine has
+             // a single flow coefficient and reports an `ActualKv` back. Dimensionless: a Kv is a
+             // number read off a valve datasheet.
+             P("kv", "dimensionless", false, "Kv"),
+             P("openingPct", "dimensionless", false, "OpeningPct")], false),
 
         new UnitOpDef("pipe", "Pipe Segment", ObjectType.Pipe,
             [In("Inlet", 0), Out("Outlet", 0)],

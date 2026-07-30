@@ -336,6 +336,15 @@ public static class FlowsheetBuilder
                 if (modeProp is not null)
                     modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletTemperature"));
             }
+            // 099 US5 — same shape, same reason: a setpoint the engine will ignore unless its mode
+            // says to read it. Only the COOLER declares `OutletVaporFraction`; the catalog reflects
+            // that, so this branch is unreachable on a heater.
+            if (p.Name == "outletVaporFraction")
+            {
+                var modeProp = so.GetType().GetProperty("CalcMode");
+                if (modeProp is not null)
+                    modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletVaporFraction"));
+            }
             // Engine efficiency (m_eta) is a percent (constructor default 100);
             // the document convention is a 0–1 fraction. ≤ 1 → fraction, ×100.
             if (p.Name == "efficiency")
@@ -384,6 +393,29 @@ public static class FlowsheetBuilder
             if (modeProp is not null)
                 modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType,
                     hot ? "CalcTempColdOut" : "CalcTempHotOut"));
+        }
+        // 099 US5 — a stated Kv implies a Kv calculation mode. The valve's default is `DeltaP` or
+        // `OutletPressure`, under which `Kv` is read by nothing: accepted, converged, ignored.
+        //
+        // `Kv_General` of the four Kv modes (Liquid/Gas/Steam/General), because it is the one that
+        // does not require the caller to have already decided the phase — and the phase is the
+        // engine's answer, not the engineer's input. 099's tasks named `kvLiquid`/`kvGas` as
+        // PARAMETERS; they are MODES, the same confusion as the splitter's `StreamMassFlowSpec`.
+        if (def.Type is "valve" && p.Name == "kv")
+        {
+            var modeProp = so.GetType().GetProperty("CalcMode") ?? so.GetType().GetProperty("CalculationMode");
+            if (modeProp is not null && modeProp.PropertyType.IsEnum)
+                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "Kv_General"));
+        }
+        // 099 US5 — a stated outlet flow implies the splitter's flow-spec mode. Its default is
+        // `SplitRatios`, under which `StreamFlowSpec` is read by nothing: the setpoint is accepted,
+        // the flowsheet converges, and the split is whatever the ratios say. The same silent-ignore
+        // this escape-hatch region exists for.
+        if (def.Type is "splitter" && p.Name == "outletMassFlow")
+        {
+            var modeProp = so.GetType().GetProperty("OperationMode") ?? so.GetType().GetProperty("OpMode");
+            if (modeProp is not null && modeProp.PropertyType.IsEnum)
+                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "StreamMassFlowSpec"));
         }
         if (def.Type is "splitter" && p.Name == "splitRatio1")
         {
