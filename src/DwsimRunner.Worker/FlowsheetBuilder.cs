@@ -137,6 +137,20 @@ public static class FlowsheetBuilder
                     Error("BUILD_FAILED", o.Tag, $"unknown object kind/type '{o.Kind}/{o.Type}'");
                     continue;
                 }
+                // AN EXTERNAL UNIT OPERATION BUILDS ITS OWN PORTS, AND NOTHING CALLS IT.
+                //
+                // `IExternalUnitOperation.CreateConnectors()` is the engine's own hook, and for a
+                // plugin-supplied op the flowsheet does not invoke it on this headless path. So
+                // `AddObject` returns a perfectly good object whose graphic has ZERO connectors, and
+                // the failure surfaces one step later as "Index was out of range" on the first
+                // connect — which reads as a wrong port index in OUR catalog rather than as a
+                // missing initialisation in the engine's.
+                //
+                // Constructed-but-unconnectable is the shape to remember: the engine inventory
+                // reports this type `instantiable` because construction genuinely succeeds.
+                if (created is DWSIM.Interfaces.IExternalUnitOperation ext)
+                    try { ext.CreateConnectors(); }
+                    catch (Exception ex) { Error("BUILD_FAILED", o.Tag, $"'{o.Tag}' could not create its ports: {ex.Message}"); }
                 byTag[o.Tag] = created;
             }
             catch (Exception ex)
@@ -229,6 +243,13 @@ public static class FlowsheetBuilder
             }
         }
 
+        // ── synthesized power streams (099 US1) ────────────────────────────
+        // AFTER connections, BEFORE parameters: the electrolyzer must already be connected to its
+        // water feed, and its `voltage`/`cellCount` must not be applied to an object that is about
+        // to be refused for having no power. See ElectrolyzerConfigurator for why the document
+        // carries power as a parameter and the engine gets a stream.
+        ElectrolyzerConfigurator.Apply(fs, doc, byTag, Error);
+
         // ── unit-op parameters ─────────────────────────────────────────────
         foreach (var o in doc.Objects.Where(o => o.Kind == "unitOp" && o.Parameters is { Count: > 0 }))
         {
@@ -246,7 +267,7 @@ public static class FlowsheetBuilder
                 }
                 try
                 {
-                    ApplyParameter(so, o, def, paramDef, raw);
+                    ApplyParameter(so, o, def, paramDef, raw, resolvedCompounds, Error);
                 }
                 catch (Exception ex)
                 {
@@ -275,11 +296,22 @@ public static class FlowsheetBuilder
 
     // Parameter application: type-specific handlers first, then reflection over
     // the candidate .NET property names, then the DWSIM generic property bag.
-    private static void ApplyParameter(ISimulationObject so, FlowObject o, UnitOpDef def, ParamDef p, JsonElement raw)
+    /// <param name="compounds">The flowsheet's RESOLVED compound names — what the engine keys a
+    /// per-compound specification by. Threaded rather than re-derived so a separator's spec cannot
+    /// be validated against a different list than the one the engine holds.</param>
+    private static void ApplyParameter(ISimulationObject so, FlowObject o, UnitOpDef def, ParamDef p,
+        JsonElement raw, IReadOnlyCollection<string> compounds,
+        Action<string, string?, string, string?> error)   // (code, tag, message, path)
     {
         if (def.Type is "distillationColumn" && ColumnConfigurator.Handles(p.Name))
         {
             ColumnConfigurator.Apply(so, p.Name, raw);
+            return;
+        }
+        // 099 US2 — a per-compound dictionary, which the generic name→property setter cannot express.
+        if (def.Type is "componentSeparator" && ComponentSeparatorConfigurator.Handles(p.Name))
+        {
+            ComponentSeparatorConfigurator.Apply(so, raw, o, compounds, error);
             return;
         }
         // Reactors: an explicit outletTemperature implies OutletTemperature
@@ -303,6 +335,15 @@ public static class FlowsheetBuilder
                 var modeProp = so.GetType().GetProperty("CalcMode");
                 if (modeProp is not null)
                     modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletTemperature"));
+            }
+            // 099 US5 — same shape, same reason: a setpoint the engine will ignore unless its mode
+            // says to read it. Only the COOLER declares `OutletVaporFraction`; the catalog reflects
+            // that, so this branch is unreachable on a heater.
+            if (p.Name == "outletVaporFraction")
+            {
+                var modeProp = so.GetType().GetProperty("CalcMode");
+                if (modeProp is not null)
+                    modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletVaporFraction"));
             }
             // Engine efficiency (m_eta) is a percent (constructor default 100);
             // the document convention is a 0–1 fraction. ≤ 1 → fraction, ×100.
@@ -352,6 +393,29 @@ public static class FlowsheetBuilder
             if (modeProp is not null)
                 modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType,
                     hot ? "CalcTempColdOut" : "CalcTempHotOut"));
+        }
+        // 099 US5 — a stated Kv implies a Kv calculation mode. The valve's default is `DeltaP` or
+        // `OutletPressure`, under which `Kv` is read by nothing: accepted, converged, ignored.
+        //
+        // `Kv_General` of the four Kv modes (Liquid/Gas/Steam/General), because it is the one that
+        // does not require the caller to have already decided the phase — and the phase is the
+        // engine's answer, not the engineer's input. 099's tasks named `kvLiquid`/`kvGas` as
+        // PARAMETERS; they are MODES, the same confusion as the splitter's `StreamMassFlowSpec`.
+        if (def.Type is "valve" && p.Name == "kv")
+        {
+            var modeProp = so.GetType().GetProperty("CalcMode") ?? so.GetType().GetProperty("CalculationMode");
+            if (modeProp is not null && modeProp.PropertyType.IsEnum)
+                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "Kv_General"));
+        }
+        // 099 US5 — a stated outlet flow implies the splitter's flow-spec mode. Its default is
+        // `SplitRatios`, under which `StreamFlowSpec` is read by nothing: the setpoint is accepted,
+        // the flowsheet converges, and the split is whatever the ratios say. The same silent-ignore
+        // this escape-hatch region exists for.
+        if (def.Type is "splitter" && p.Name == "outletMassFlow")
+        {
+            var modeProp = so.GetType().GetProperty("OperationMode") ?? so.GetType().GetProperty("OpMode");
+            if (modeProp is not null && modeProp.PropertyType.IsEnum)
+                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "StreamMassFlowSpec"));
         }
         if (def.Type is "splitter" && p.Name == "splitRatio1")
         {
@@ -406,6 +470,13 @@ public static class FlowsheetBuilder
             var target = prop.PropertyType;
             var converted = target.IsEnum ? Enum.Parse(target, value.ToString()!, ignoreCase: true)
                 : target == typeof(int) ? Convert.ToInt32(value)
+                // 099 US2 — `ComponentSeparator.SpecifiedStreamIndex` is a BYTE. JSON gives Int32, and
+                // without this the setter threw "Object of type 'System.Int32' cannot be converted to
+                // type 'System.Byte'" — a reflection message about a document the caller wrote.
+                : target == typeof(byte) ? Convert.ToByte(value)
+                : target == typeof(short) ? Convert.ToInt16(value)
+                : target == typeof(long) ? Convert.ToInt64(value)
+                : target == typeof(float) ? Convert.ToSingle(value)
                 : target == typeof(double) ? Convert.ToDouble(value)
                 : target == typeof(double?) ? (double?)Convert.ToDouble(value)
                 : value;
