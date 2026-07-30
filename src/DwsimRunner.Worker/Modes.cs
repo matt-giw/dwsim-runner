@@ -190,7 +190,16 @@ static class Modes
             Name:           ms.GraphicObject.Tag,
             Phase:          ms.Phases[0].Properties.molarfraction == 1 ? "vapor" : null,
             TemperatureC:   Round(ms.Phases[0].Properties.temperature, -273.15),
-            PressureBar:    Round(ms.Phases[0].Properties.pressure, 0, 1e-5),
+            // SIX decimals of bar (0.1 Pa), not three. At three, 1.01325 bar — one atmosphere —
+            // came back as 1.013, and a caller asking for pascals got 101300 instead of 101325. The
+            // 25 Pa was not approximated, it was DESTROYED: multiplying by 1e5 cannot recover it,
+            // which is the lesson this file already records about entropy a hundred lines down.
+            //
+            // Only pressure needs it, because it is the one quantity whose SI unit is 100000x the
+            // reported unit — 3 decimals of bar is 100 Pa of resolution. Temperature (°C) and the
+            // flows are reported near their SI magnitude, where 3 decimals is finer than the engine
+            // converges to.
+            PressureBar:    Round(ms.Phases[0].Properties.pressure, 0, 1e-5, 6),
             MassFlowKgH:    Round(ms.Phases[0].Properties.massflow, 0, 3600),
             MolarFlowKmolH: Round(ms.Phases[0].Properties.molarflow, 0, 3.6),
             CompositionMol: comp,
@@ -199,8 +208,8 @@ static class Modes
             // own comments: self-consistent, unflagged, and wrong by three orders of magnitude.
             DensityKgM3:    Round(ms.Phases[0].Properties.density));
 
-        static double? Round(double? si, double offset = 0, double scale = 1) =>
-            si is double v && double.IsFinite(v) ? Math.Round(v * scale + offset, 3) : null;
+        static double? Round(double? si, double offset = 0, double scale = 1, int digits = 3) =>
+            si is double v && double.IsFinite(v) ? Math.Round(v * scale + offset, digits) : null;
     }
 
     private static UnitOpRow HarvestUnitOp(ISimulationObject obj)
@@ -443,7 +452,8 @@ static class Modes
             return new PhaseOut(label, Math.Round(moleFrac, 6), comp);
         }
         static double? RoundC(double? k) => k is double v && double.IsFinite(v) ? Math.Round(v - 273.15, 3) : null;
-        static double? RoundBar(double? pa) => pa is double v && double.IsFinite(v) ? Math.Round(v * 1e-5, 3) : null;
+        // Six decimals, matching the solve harvest — the two must not disagree about one pressure.
+        static double? RoundBar(double? pa) => pa is double v && double.IsFinite(v) ? Math.Round(v * 1e-5, 6) : null;
     }
 
     private static double RequireSi(FlowQuantity? q, string name, string siUnit)
