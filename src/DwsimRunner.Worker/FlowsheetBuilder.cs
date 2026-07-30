@@ -267,7 +267,7 @@ public static class FlowsheetBuilder
                 }
                 try
                 {
-                    ApplyParameter(so, o, def, paramDef, raw);
+                    ApplyParameter(so, o, def, paramDef, raw, resolvedCompounds, Error);
                 }
                 catch (Exception ex)
                 {
@@ -296,11 +296,22 @@ public static class FlowsheetBuilder
 
     // Parameter application: type-specific handlers first, then reflection over
     // the candidate .NET property names, then the DWSIM generic property bag.
-    private static void ApplyParameter(ISimulationObject so, FlowObject o, UnitOpDef def, ParamDef p, JsonElement raw)
+    /// <param name="compounds">The flowsheet's RESOLVED compound names — what the engine keys a
+    /// per-compound specification by. Threaded rather than re-derived so a separator's spec cannot
+    /// be validated against a different list than the one the engine holds.</param>
+    private static void ApplyParameter(ISimulationObject so, FlowObject o, UnitOpDef def, ParamDef p,
+        JsonElement raw, IReadOnlyCollection<string> compounds,
+        Action<string, string?, string, string?> error)   // (code, tag, message, path)
     {
         if (def.Type is "distillationColumn" && ColumnConfigurator.Handles(p.Name))
         {
             ColumnConfigurator.Apply(so, p.Name, raw);
+            return;
+        }
+        // 099 US2 — a per-compound dictionary, which the generic name→property setter cannot express.
+        if (def.Type is "componentSeparator" && ComponentSeparatorConfigurator.Handles(p.Name))
+        {
+            ComponentSeparatorConfigurator.Apply(so, raw, o, compounds, error);
             return;
         }
         // Reactors: an explicit outletTemperature implies OutletTemperature
@@ -427,6 +438,13 @@ public static class FlowsheetBuilder
             var target = prop.PropertyType;
             var converted = target.IsEnum ? Enum.Parse(target, value.ToString()!, ignoreCase: true)
                 : target == typeof(int) ? Convert.ToInt32(value)
+                // 099 US2 — `ComponentSeparator.SpecifiedStreamIndex` is a BYTE. JSON gives Int32, and
+                // without this the setter threw "Object of type 'System.Int32' cannot be converted to
+                // type 'System.Byte'" — a reflection message about a document the caller wrote.
+                : target == typeof(byte) ? Convert.ToByte(value)
+                : target == typeof(short) ? Convert.ToInt16(value)
+                : target == typeof(long) ? Convert.ToInt64(value)
+                : target == typeof(float) ? Convert.ToSingle(value)
                 : target == typeof(double) ? Convert.ToDouble(value)
                 : target == typeof(double?) ? (double?)Convert.ToDouble(value)
                 : value;

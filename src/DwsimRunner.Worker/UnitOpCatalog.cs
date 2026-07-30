@@ -120,6 +120,24 @@ public static class UnitOpCatalog
              P("efficiency", "dimensionless", false, "InputEfficiency")], false,
             ExternalId: "Water Electrolyzer"),
 
+        // Spec 099 US2 — one engine type un-strands THREE equipment classes: ReverseOsmosisUnit,
+        // Adsorber and IonExchanger all draw today and vanish from every solve, because a
+        // per-compound split is exactly what they are and no exposed type does one.
+        //
+        // OUTLET NAMES ARE POSITIONAL ON PURPOSE. Not vapor/liquid, not permeate/reject: the
+        // mapper's NOZZLE-side hints already match `permeate` as a vapour hint and `reject` as a
+        // liquid one, so a vapor/liquid-shaped CATALOG name would make the name-matching assignment
+        // compete with the positional plan, and which won would depend on regex details rather than
+        // on the engineer's drawing. `Outlet 2` is optional so an IonExchanger — one in, one out —
+        // leaves nothing unpiped.
+        //
+        // `separationSpecs` is a per-compound DICTIONARY, which name→property reflection cannot
+        // express, so it has a bespoke configurator like the column and the electrolyzer.
+        new UnitOpDef("componentSeparator", "Component Separator", ObjectType.ComponentSeparator,
+            [In("Inlet", 0), Out("Outlet 1", 0), Out("Outlet 2", 1, required: false)],
+            [P("specifiedStreamIndex", "integer", false, "SpecifiedStreamIndex"),
+             P("separationSpecs", "string", false)], false),
+
         new UnitOpDef("pump", "Pump", ObjectType.Pump,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("outletPressure", "pressure", false, "Pout", "POut"),
