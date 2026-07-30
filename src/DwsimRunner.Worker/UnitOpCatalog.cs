@@ -16,8 +16,20 @@ namespace DwsimRunner.Worker;
 
 public sealed record PortDef(string Name, string Direction, string Accepts, bool Required, int Index);
 public sealed record ParamDef(string Name, string UnitType, bool Required, string[] EngineProperties);
+/// <param name="ExternalId">
+/// Set ONLY for an EXTERNAL unit operation, and it is the engine's registry key ("Water
+/// Electrolyzer"), not the wire type.
+///
+/// DWSIM builds a unit op two ways and the difference is not cosmetic. The ordinary path is
+/// `AddObject(ObjectType, x, y, tag)`. An external op needs `AddObject(ObjectType.External, x, y,
+/// ID, tag)` — the five-argument overload — because the id is what selects it from the plugin
+/// registry. Measured: `AddObject(ObjectType.WaterElectrolyzer, ...)` RETURNS AN OBJECT, so it looks
+/// like it worked, and that object has ZERO graphic connectors, so the first attempt to connect its
+/// water inlet fails with "Index was out of range". Constructed-but-unconnectable is the shape to
+/// watch for, and it is why the engine inventory reports this type instantiable.
+/// </param>
 public sealed record UnitOpDef(string Type, string DisplayName, ObjectType ObjectType,
-    PortDef[] Ports, ParamDef[] Parameters, bool RequiresReactionSet);
+    PortDef[] Ports, ParamDef[] Parameters, bool RequiresReactionSet, string? ExternalId = null);
 
 public static class UnitOpCatalog
 {
@@ -82,6 +94,31 @@ public static class UnitOpCatalog
              P("hotSideOutletTemperature", "temperature", false, "HotSideOutletTemperature"),
              P("overallHeatTransferCoefficient", "heatTransferCoefficient", false, "OverallCoefficient"),
              P("area", "area", false, "Area")], false),
+
+        // Spec 099 US1 — the P0 entry. `ElectrolyzerStack` carried "DWSIM has no electrolyzer unit
+        // op" for a year; the engine has shipped this since 9.0, in the DLL already vendored here.
+        //
+        // NO ENERGY PORT, deliberately. The engine takes its power on input connector 1 and leaves
+        // the graphic energy connector inactive, but the document's standing invariant is that an
+        // energy port is a PARAMETER, never a nozzle (spec 024 FR-009). So `powerInput` is a
+        // parameter with no engine property, and `ElectrolyzerConfigurator` synthesizes the energy
+        // stream the engine demands. It is `required: true` because absence is not a degraded solve
+        // — it is a null dereference inside `Calculate`, and the runner must refuse first.
+        //
+        // `voltage` is the STACK TOTAL, not the per-cell voltage. `CellVoltage` is settable on the
+        // engine class and is REPORTED — every property on this type has a setter, so a setter proves
+        // nothing about what the engine reads. Binding a datasheet's 1.9 V here would send 1.9 where
+        // ~988 is expected, converge, and return a current 520x too large. The app derives the total.
+        //
+        // `efficiency` binds `InputEfficiency`, NOT `Efficiency`: the latter is what the engine
+        // reports back. Same trap as the voltage pair, one property apart.
+        new UnitOpDef("waterElectrolyzer", "Water Electrolyzer", ObjectType.WaterElectrolyzer,
+            [In("Water Inlet", 0), Out("Hydrogen-Rich Outlet", 0), Out("Oxygen-Rich Outlet", 1)],
+            [P("powerInput", "power", true),
+             P("voltage", "voltage", false, "Voltage"),
+             P("cellCount", "integer", false, "NumberOfCells"),
+             P("efficiency", "dimensionless", false, "InputEfficiency")], false,
+            ExternalId: "Water Electrolyzer"),
 
         new UnitOpDef("pump", "Pump", ObjectType.Pump,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],

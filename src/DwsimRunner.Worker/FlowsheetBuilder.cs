@@ -137,6 +137,20 @@ public static class FlowsheetBuilder
                     Error("BUILD_FAILED", o.Tag, $"unknown object kind/type '{o.Kind}/{o.Type}'");
                     continue;
                 }
+                // AN EXTERNAL UNIT OPERATION BUILDS ITS OWN PORTS, AND NOTHING CALLS IT.
+                //
+                // `IExternalUnitOperation.CreateConnectors()` is the engine's own hook, and for a
+                // plugin-supplied op the flowsheet does not invoke it on this headless path. So
+                // `AddObject` returns a perfectly good object whose graphic has ZERO connectors, and
+                // the failure surfaces one step later as "Index was out of range" on the first
+                // connect — which reads as a wrong port index in OUR catalog rather than as a
+                // missing initialisation in the engine's.
+                //
+                // Constructed-but-unconnectable is the shape to remember: the engine inventory
+                // reports this type `instantiable` because construction genuinely succeeds.
+                if (created is DWSIM.Interfaces.IExternalUnitOperation ext)
+                    try { ext.CreateConnectors(); }
+                    catch (Exception ex) { Error("BUILD_FAILED", o.Tag, $"'{o.Tag}' could not create its ports: {ex.Message}"); }
                 byTag[o.Tag] = created;
             }
             catch (Exception ex)
@@ -228,6 +242,13 @@ public static class FlowsheetBuilder
                 Error("INVALID_PARAMETER_VALUE", o.Tag, $"cannot apply stream spec on '{o.Tag}': {ex.Message}");
             }
         }
+
+        // ── synthesized power streams (099 US1) ────────────────────────────
+        // AFTER connections, BEFORE parameters: the electrolyzer must already be connected to its
+        // water feed, and its `voltage`/`cellCount` must not be applied to an object that is about
+        // to be refused for having no power. See ElectrolyzerConfigurator for why the document
+        // carries power as a parameter and the engine gets a stream.
+        ElectrolyzerConfigurator.Apply(fs, doc, byTag, Error);
 
         // ── unit-op parameters ─────────────────────────────────────────────
         foreach (var o in doc.Objects.Where(o => o.Kind == "unitOp" && o.Parameters is { Count: > 0 }))

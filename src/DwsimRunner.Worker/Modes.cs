@@ -266,6 +266,11 @@ static class Modes
                     streams.Add(HarvestStream(ms));
                     break;
                 case DWSIM.UnitOperations.Streams.EnergyStream es:
+                    // 099 US1 — a synthesized electrolyzer power stream is not in the DOCUMENT, so
+                    // reporting it would have the app fold back a stream its own side does not
+                    // contain. Hidden in BOTH harvests: the worker has two entry points, and fixing
+                    // one makes the answer depend on which one ran (Hazard 7).
+                    if (ElectrolyzerConfigurator.IsSynthesizedPower(es.GraphicObject.Tag)) break;
                     energy.Add(new EnergyRow(es.GraphicObject.Tag,
                         es.EnergyFlow is double ef && double.IsFinite(ef) ? Math.Round(ef, 1) : null));
                     break;
@@ -382,6 +387,7 @@ static class Modes
         DWSIM.UnitOperations.Streams.EnergyStream => "energyStream",
         _ => obj.GetType().Name switch
         {
+            "WaterElectrolyzer" => "waterElectrolyzer",
             "Compressor" => "compressor",
             "Pump" => "pump",
             "Expander" or "Turbine" => "expander",

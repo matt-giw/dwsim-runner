@@ -77,6 +77,10 @@ public static class DocumentValidator
         // unknown unit, so the number arrives under the wrong dimension with no error at all.
         ["heatTransferCoefficient"] = ["W/[m2.K]", "BTU/[ft2.h.R]", "cal/[cm2.s.C]"],
         ["area"] = ["m2", "cm2", "ft2"],
+        // 099 FR-017. DWSIM's converter has no voltage family — its SI unit IS the volt — so these
+        // are converted by this runner, not by the engine, and the list is deliberately tiny: an
+        // electrolyzer stack is specified in V or kV and nothing else.
+        ["voltage"] = ["V", "kV", "mV"],
         ["volume"] = ["m3", "L", "ft3"],
         ["length"] = ["m", "mm", "cm", "in", "ft"],
         ["dimensionless"] = [],
