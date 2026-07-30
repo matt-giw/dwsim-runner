@@ -64,9 +64,24 @@ public static class UnitOpCatalog
 
         new UnitOpDef("heatExchanger", "Heat Exchanger", ObjectType.HeatExchanger,
             [In("Inlet 1", 0), In("Inlet 2", 1), Out("Outlet 1", 0), Out("Outlet 2", 1)],
+            // `overallUA` was NEITHER a UA NOR a power, and it is now two parameters that are what
+            // the engine actually has. Measured, not read: DWSIM's own `SetPropertyValue` converts
+            // `OverallCoefficient` through `IUnitsOfMeasure.heat_transf_coeff` — W/[m2.K], an area-
+            // specific coefficient — and the `CalcBothTemp_UA` branch of `Calculate` reads BOTH
+            // `Area` and `OverallCoefficient` and uses their product. There is no UA property.
+            //
+            // The old declaration was wrong twice over, and the two errors hid each other:
+            //   - `overallUA: 2500` bare gave the exactly-right duty (172.1 kW against 172.4 kW of
+            //     counter-flow NTU theory) — but only because `Area` defaults to 1.0 m2, so U and UA
+            //     are numerically equal in the default case and nowhere else.
+            //   - `overallUA: {2500, "W"}` gave 0.2 kW: the "power" unitType converted W→kW, so
+            //     U arrived as 2.5. A 1000x error, converged, no warning.
+            //   - `overallUA: {2500, "W/K"}` — the honest unit — was REFUSED as an unknown power
+            //     unit. The parameter was only reachable by declining to say what you meant.
             [P("coldSideOutletTemperature", "temperature", false, "ColdSideOutletTemperature"),
              P("hotSideOutletTemperature", "temperature", false, "HotSideOutletTemperature"),
-             P("overallUA", "power", false, "OverallCoefficient")], false),
+             P("overallHeatTransferCoefficient", "heatTransferCoefficient", false, "OverallCoefficient"),
+             P("area", "area", false, "Area")], false),
 
         new UnitOpDef("pump", "Pump", ObjectType.Pump,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],

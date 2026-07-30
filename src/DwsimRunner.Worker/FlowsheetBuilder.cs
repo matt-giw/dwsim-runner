@@ -314,6 +314,45 @@ public static class FlowsheetBuilder
                 return;
             }
         }
+        // Heat exchanger: the SAME bug as the two blocks above, and it had been measured and
+        // written down as unfixable. It is not — it just needs the same three lines.
+        //
+        // The engine constructs in `CalcBothTemp_UA`, where BOTH outlet temperatures are OUTPUTS.
+        // So `hotSideOutletTemperature` and `coldSideOutletTemperature` were accepted, converged,
+        // and had NO EFFECT: a document asking for a 60 degC outlet came back with whatever
+        // U = 1000 W/[m2.K] and A = 1 m2 happen to give, reported as converged, with no warning.
+        // Measured: the setpoint, the other setpoint, and both together all produce byte-identical
+        // results to sending no parameters at all.
+        //
+        // The mode name says which temperature the engine SOLVES FOR, so specifying the hot outlet
+        // means the COLD one is calculated — `CalcTempColdOut`. That reading is asserted by
+        // `HeatExchangerTests` against the live engine rather than trusted, because getting it
+        // backwards silently swaps which of two plausible temperatures is honoured.
+        // The mode is decided from the WHOLE parameter set, not from the parameter in hand: with
+        // both setpoints given, a per-parameter decision would leave whichever one the dictionary
+        // happened to enumerate last in charge, so the same document could mean two things.
+        //
+        // BOTH setpoints together is REFUSED, and that is an engineering answer rather than a
+        // limitation. With both inlet states and both flows fixed, the hot outlet temperature
+        // already determines the duty; the cold outlet temperature determines it a second time,
+        // and the two agree only by coincidence. DWSIM's `CalcBothTemp` looks like the mode for
+        // this and is not: measured, it returns duty 0 with both outlets equal to their inlets —
+        // converged, and the exchanger does nothing. Refusing beats picking one silently, and
+        // beats a mode that quietly disables the unit.
+        if (def.Type is "heatExchanger" && p.Name is "hotSideOutletTemperature" or "coldSideOutletTemperature")
+        {
+            bool Given(string n) => o.Parameters!.Keys.Any(k => string.Equals(k, n, StringComparison.OrdinalIgnoreCase));
+            var hot = Given("hotSideOutletTemperature");
+            if (hot && Given("coldSideOutletTemperature"))
+                throw new InvalidOperationException(
+                    "hotSideOutletTemperature and coldSideOutletTemperature are both set, which " +
+                    "specifies the duty twice — keep one and let the exchanger compute the other, " +
+                    "or drop both and size it with overallHeatTransferCoefficient + area");
+            var modeProp = so.GetType().GetProperty("CalculationMode");
+            if (modeProp is not null)
+                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType,
+                    hot ? "CalcTempColdOut" : "CalcTempHotOut"));
+        }
         if (def.Type is "splitter" && p.Name == "splitRatio1")
         {
             var r1 = raw.ValueKind == JsonValueKind.Object ? raw.GetProperty("value").GetDouble() : raw.GetDouble();
