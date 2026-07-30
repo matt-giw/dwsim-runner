@@ -183,4 +183,25 @@ public class FlashEndpointTests
         Assert.Equal(HttpStatusCode.OK, third.StatusCode);
         Assert.Equal(spawnsAfterFirst + 1, host.StartMarkers().Length);
     }
+
+    // DENSITY on the wire (iskra spec 090 eval tier, finding F5).
+    //
+    // iskra asks the co-pilot to report a stream's density and then checks it against ~997 kg/m3 for
+    // water at 25 C. Nothing on the wire carried a density, so the agent answered from MEMORY and the
+    // check could only be recorded as unverifiable — a right number with no provenance, which is the
+    // one failure mode the whole system exists to prevent.
+    //
+    // Nullable, and that is deliberate: a density the engine will not give must never fail a flash
+    // that otherwise converged. The caller distinguishes "not reported" from "wrong".
+    [Fact]
+    public async Task Tp_flash_reports_density()
+    {
+        using var host = new RunnerHost();
+        var res = await host.Client.PostAsJsonAsync("/flash", TpRequest());
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var body = await res.Content.ReadFromJsonAsync<JsonElement>(Json);
+        Assert.True(body.TryGetProperty("densityKgM3", out var d),
+            "the flash response carries no densityKgM3 field");
+        Assert.Equal(52.31, d.GetDouble(), 3);
+    }
 }

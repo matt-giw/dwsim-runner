@@ -180,7 +180,7 @@ static class Modes
             Template: null);
     }
 
-    private static StreamRow HarvestStream(DWSIM.Thermodynamics.Streams.MaterialStream ms)
+    internal static StreamRow HarvestStream(DWSIM.Thermodynamics.Streams.MaterialStream ms)
     {
         var comp = new Dictionary<string, double>();
         foreach (var c in ms.Phases[0].Compounds.Values)
@@ -193,7 +193,11 @@ static class Modes
             PressureBar:    Round(ms.Phases[0].Properties.pressure, 0, 1e-5),
             MassFlowKgH:    Round(ms.Phases[0].Properties.massflow, 0, 3600),
             MolarFlowKmolH: Round(ms.Phases[0].Properties.molarflow, 0, 3.6),
-            CompositionMol: comp);
+            CompositionMol: comp,
+            // Already kg/m3 in DWSIM's SI store, so no scale — unlike massflow (kg/s -> kg/h) and
+            // pressure (Pa -> bar) above. Getting that wrong is the enthalpy/1000 bug in this file's
+            // own comments: self-consistent, unflagged, and wrong by three orders of magnitude.
+            DensityKgM3:    Round(ms.Phases[0].Properties.density));
 
         static double? Round(double? si, double offset = 0, double scale = 1) =>
             si is double v && double.IsFinite(v) ? Math.Round(v * scale + offset, 3) : null;
@@ -394,13 +398,41 @@ static class Modes
         double? enthalpyKJKg = result.CalculatedEnthalpy is double h && double.IsFinite(h) ? h : null;
         double? entropyKJKgK = result.CalculatedEntropy is double se && double.IsFinite(se) ? se : null;
 
+        // DENSITY. `FlashCalculationResult` carries T/P/h/s and phase mole fractions — no density —
+        // so it comes from the scratch feed stream instead: set it to the state the flash just found
+        // and let the engine populate the phase properties the same way a solved flowsheet does.
+        // That is deliberately the SAME member the solve harvest reads
+        // (`Phases[0].Properties.density`), so the two paths cannot report different densities for
+        // the same state.
+        //
+        // Best-effort: a null density must never fail a flash that otherwise converged. The caller
+        // distinguishes "not reported" from "wrong" and says so.
+        double? densityKgM3 = null;
+        try
+        {
+            if (result.CalculatedTemperature is double tK && double.IsFinite(tK) &&
+                result.CalculatedPressure is double pPa && double.IsFinite(pPa) &&
+                feed is DWSIM.Thermodynamics.Streams.MaterialStream feedMs)
+            {
+                feedMs.SetTemperature(tK);
+                feedMs.SetPressure(pPa);
+                feedMs.SetMassFlow(1.0);
+                feedMs.PropertyPackage = (DWSIM.Thermodynamics.PropertyPackages.PropertyPackage)package;
+                feedMs.Calculate(true, true);
+                if (feedMs.Phases[0].Properties.density is double rho && double.IsFinite(rho) && rho > 0)
+                    densityKgM3 = Math.Round(rho, 3);
+            }
+        }
+        catch { densityKgM3 = null; }
+
         return new FlashResult(
             VaporFraction: Math.Round(vaporFraction, 6),
             TemperatureC:  RoundC(result.CalculatedTemperature),
             PressureBar:   RoundBar(result.CalculatedPressure),
             Phases: phases,
             EnthalpyKJKg:  enthalpyKJKg is double e ? Math.Round(e, 3) : null,
-            EntropyKJKgK:  entropyKJKgK is double ek ? Math.Round(ek, 3) : null);
+            EntropyKJKgK:  entropyKJKgK is double ek ? Math.Round(ek, 3) : null,
+            DensityKgM3:   densityKgM3);
 
         static PhaseOut BuildPhase(string label, double moleFrac, IReadOnlyList<double> moleFracs, List<string> compounds)
         {
@@ -524,7 +556,9 @@ record FlashRequest(List<string> Compounds, FlowComposition Composition, string 
     FlowQuantity? Enthalpy, FlowQuantity? Entropy);
 
 record FlashResult(double VaporFraction, double? TemperatureC, double? PressureBar,
-    List<PhaseOut> Phases, double? EnthalpyKJKg, double? EntropyKJKgK);
+    List<PhaseOut> Phases, double? EnthalpyKJKg, double? EntropyKJKgK,
+    // Nullable and last: a density the engine would not give must not fail a converged flash.
+    double? DensityKgM3 = null);
 record PhaseOut(string Phase, double MolarFraction, Dictionary<string, double> Composition);
 
 record PfdResult(string PngBase64);
