@@ -71,6 +71,12 @@ public static class DocumentValidator
         ["volumetricFlow"] = ["m3/h", "m3/s", "L/min", "L/s", "L/h", "ft3/s"],
         ["enthalpy"] = ["kJ/kg", "J/kg", "BTU/lb"],
         ["power"] = ["kW", "W", "MW", "hp"],
+        // Every spelling here is one DWSIM's own `Converter.ConvertToSI` accepts — read off the
+        // literals in DWSIM.SharedClasses, not guessed. A unit this table admits and the converter
+        // does not is worse than a rejection: `ConvertToSI` returns the value unchanged for an
+        // unknown unit, so the number arrives under the wrong dimension with no error at all.
+        ["heatTransferCoefficient"] = ["W/[m2.K]", "BTU/[ft2.h.R]", "cal/[cm2.s.C]"],
+        ["area"] = ["m2", "cm2", "ft2"],
         ["volume"] = ["m3", "L", "ft3"],
         ["length"] = ["m", "mm", "cm", "in", "ft"],
         ["dimensionless"] = [],
