@@ -183,9 +183,18 @@ static class Modes
     internal static StreamRow HarvestStream(DWSIM.Thermodynamics.Streams.MaterialStream ms)
     {
         var comp = new Dictionary<string, double>();
+        // MASS fractions alongside mole fractions. Water/ethanol separations are stated on a mass
+        // basis by every tutorial that uses them, and mole->mass needs molar masses that the caller
+        // does not have — DWSIM does, and reports both, so harvesting both is one line instead of a
+        // molar-mass table nobody should be maintaining twice.
+        var compMass = new Dictionary<string, double>();
         foreach (var c in ms.Phases[0].Compounds.Values)
+        {
             if (c.MoleFraction is double mf && double.IsFinite(mf) && mf > 1e-9)
                 comp[c.Name] = Math.Round(mf, 6);
+            if (c.MassFraction is double xf && double.IsFinite(xf) && xf > 1e-9)
+                compMass[c.Name] = Math.Round(xf, 6);
+        }
         return new StreamRow(
             Name:           ms.GraphicObject.Tag,
             Phase:          ms.Phases[0].Properties.molarfraction == 1 ? "vapor" : null,
@@ -206,7 +215,8 @@ static class Modes
             // Already kg/m3 in DWSIM's SI store, so no scale — unlike massflow (kg/s -> kg/h) and
             // pressure (Pa -> bar) above. Getting that wrong is the enthalpy/1000 bug in this file's
             // own comments: self-consistent, unflagged, and wrong by three orders of magnitude.
-            DensityKgM3:    Round(ms.Phases[0].Properties.density));
+            DensityKgM3:    Round(ms.Phases[0].Properties.density),
+            CompositionMass: compMass.Count > 0 ? compMass : null);
 
         static double? Round(double? si, double offset = 0, double scale = 1, int digits = 3) =>
             si is double v && double.IsFinite(v) ? Math.Round(v * scale + offset, digits) : null;
@@ -336,7 +346,10 @@ static class Modes
         // scratch stream carrying the requested overall composition.
         var feed = (IMaterialStream)fs.AddObject(
             DWSIM.Interfaces.Enums.GraphicObjects.ObjectType.MaterialStream, 50, 50, "FLASH-FEED");
-        feed.SetOverallMolarComposition([.. compositionVector]);
+        if (string.Equals(flash.Composition.Basis, "mass", StringComparison.OrdinalIgnoreCase))
+            feed.SetOverallMassComposition([.. compositionVector]);
+        else
+            feed.SetOverallMolarComposition([.. compositionVector]);
         package.CurrentMaterialStream = feed;
 
         // Map flashType → FlashCalculationType + the two spec values in SI.

@@ -107,7 +107,10 @@ record IssueOut(string Severity, string Code, string? Tag, string? Path, string 
 // and the check could only be recorded as unverifiable. DWSIM knows it; we simply never picked it up.
 record StreamRow(string Name, string? Phase, double? TemperatureC, double? PressureBar,
                  double? MassFlowKgH, double? MolarFlowKmolH, Dictionary<string, double>? CompositionMol,
-                 double? DensityKgM3 = null);
+                 double? DensityKgM3 = null,
+                 // Mass basis, because a separation is stated that way. Nullable and last: absence is
+                 // "the engine did not report it", never an implied zero.
+                 Dictionary<string, double>? CompositionMass = null);
 record EnergyRow(string Name, double? DutyKw);
 record UnitOpRow(string Name, string Type, double? PowerKw, double? DutyKw,
                  double? OutletTemperatureC, double? OutletPressureBar);
