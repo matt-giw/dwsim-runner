@@ -133,8 +133,17 @@ public static class UnitOpCatalog
         //
         // `separationSpecs` is a per-compound DICTIONARY, which name→property reflection cannot
         // express, so it has a bespoke configurator like the column and the electrolyzer.
+        //
+        // BOTH OUTLETS ARE REQUIRED, and 099's contract said otherwise. It made `Outlet 2` optional
+        // so an IonExchanger — one in, one out — would leave nothing unpiped, judging a synthesized
+        // product stream to be "noise for the common case". Measured: with the second outlet
+        // unpiped the engine throws a NullReferenceException from inside `Calculate` — it
+        // dereferences that outlet unconditionally, exactly as the electrolyzer does its power.
+        // So the mapper synthesizes the stream, which it already does for any unpiped required
+        // outlet and reports as INFORMATIONAL. The "noise" is a named, harmless drop; the
+        // alternative was a .NET stack trace.
         new UnitOpDef("componentSeparator", "Component Separator", ObjectType.ComponentSeparator,
-            [In("Inlet", 0), Out("Outlet 1", 0), Out("Outlet 2", 1, required: false)],
+            [In("Inlet", 0), Out("Outlet 1", 0), Out("Outlet 2", 1)],
             [P("specifiedStreamIndex", "integer", false, "SpecifiedStreamIndex"),
              P("separationSpecs", "string", false)], false),
 

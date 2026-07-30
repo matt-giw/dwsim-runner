@@ -131,20 +131,25 @@ public class ComponentSeparatorTests
         Assert.Contains("PercentInletMassFlow", r.ToString());
     }
 
-    /// One in, one out — an ion exchanger. `Outlet 2` is optional so nothing is left unpiped.
+    /// BOTH outlets are required, because the engine dereferences the second unconditionally.
     [SkippableFact]
-    public async Task A_single_outlet_is_legal_so_an_ion_exchanger_leaves_nothing_unpiped()
+    public async Task A_separator_with_only_one_outlet_piped_is_refused_before_the_engine_throws()
     {
         Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
 
-        var (status, _) = await Post(Doc("""
+        // 099's contract made `Outlet 2` optional so a one-in-one-out ion exchanger would leave
+        // nothing unpiped, calling a synthesized product stream "noise for the common case".
+        // Measured: unpiped, the engine throws a NullReferenceException from inside `Calculate` —
+        // the same unconditional dereference as the electrolyzer's power. So the port is required,
+        // the mapper synthesizes the stream it already synthesizes for any unpiped required outlet,
+        // and this asserts an engineer never reads that trace.
+        var (status, r) = await Post(Doc("""
             "separationSpecs": { "Sodium chloride": { "spec": "PercentInletMassFlow", "value": 99.0 } }
             """, secondOutlet: false));
 
-        // Not asserting convergence — the engine may or may not solve a one-outlet separator, and
-        // that is a separate question. What must hold is that the CATALOG does not refuse it for
-        // want of a second outlet, which is what `required: false` buys.
-        Assert.NotEqual(HttpStatusCode.BadRequest, status);
+        Assert.NotEqual(HttpStatusCode.OK, status);
+        Assert.DoesNotContain("NullReferenceException", r.ToString());
+        Assert.Contains("Outlet 2", r.ToString());
     }
 
     /// `SpecifiedStreamIndex` is a BYTE on the engine class.

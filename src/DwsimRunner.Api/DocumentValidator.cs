@@ -262,6 +262,29 @@ public static class DocumentValidator
                     $"stream '{streamTag}' has more than one {(fromIsUnit ? "source" : "destination")} connection");
         }
 
+        // ── required ports ────────────────────────────────────────────────
+        //
+        // `CatalogPort.Required` was PARSED AND NEVER READ — a field that exists, is populated per
+        // port, and had no consumer. Required PARAMETERS were enforced above; required PORTS were
+        // a claim nothing checked, which is the `checkInvariants`-with-zero-callers shape.
+        //
+        // It matters because an unconnected required port is not a degraded solve. Measured on
+        // `componentSeparator` with its second outlet unpiped: DWSIM throws a NullReferenceException
+        // from inside `Calculate`, because it dereferences that outlet unconditionally — the same
+        // shape as the electrolyzer's power. The engineer would read a .NET stack trace.
+        foreach (var (tag, (kind, type, idx)) in objectsByTag)
+        {
+            if (kind != "unitOp" || type is null || !catalog.UnitOpTypes.TryGetValue(type, out var info)) continue;
+            foreach (var req in info.Ports.Where(p => p.Required))
+            {
+                if (portUse.ContainsKey((tag, req.Name))) continue;
+                Error("MISSING_REQUIRED_PORT", tag, $"objects[{idx}]",
+                    $"'{type}' requires port '{req.Name}' to be connected on '{tag}', and no " +
+                    $"connection names it. The engine dereferences it unconditionally, so leaving " +
+                    $"it open is an exception inside the solver rather than a partial answer.");
+            }
+        }
+
         // ── reactions / reaction sets ─────────────────────────────────────
         var reactionTags = new HashSet<string>(StringComparer.Ordinal);
         if (doc.TryGetProperty("reactions", out var rxs) && rxs.ValueKind == JsonValueKind.Array)
