@@ -182,6 +182,10 @@ app.MapGet("/templates/{id}/file", (string id) =>
 app.MapGet("/catalog/compounds", (CancellationToken ct) => CatalogSection("compounds", ct));
 app.MapGet("/catalog/property-packages", (CancellationToken ct) => CatalogSection("propertyPackages", ct));
 app.MapGet("/catalog/unit-op-types", (CancellationToken ct) => CatalogSection("unitOpTypes", ct));
+// 099 FR-001 / 034 FR-020 — what the ENGINE declares, versus what this runner exposes. A section of
+// the already version-keyed catalog payload, so it inherits its cache: no new worker mode, no second
+// cache to go stale against the first.
+app.MapGet("/catalog/engine-inventory", (CancellationToken ct) => CatalogSection("engineInventory", ct));
 
 async Task<IResult> CatalogSection(string section, CancellationToken ct)
 {

@@ -58,8 +58,137 @@ static class Modes
             })
             .ToList();
 
-        return new CatalogResult(engineVersion, compounds, packages, UnitOpCatalog.ToPayload());
+        return new CatalogResult(engineVersion, compounds, packages, UnitOpCatalog.ToPayload(),
+            EngineInventory(auto));
     }
+
+    /// <summary>
+    /// Every unit-op kind the ENGINE declares, and whether this runner exposes it (099 FR-001/FR-004,
+    /// implementing 034 FR-020/021 — the part of 034 that did not land).
+    /// </summary>
+    /// <remarks>
+    /// Every ledger in iskra compares the app to the runner's hand-written allowlist. NOTHING compared
+    /// either side to what DWSIM itself declares — which is why the claim "DWSIM has no electrolyzer
+    /// unit op" had nothing on the other side of it and stood for a year, while `WaterElectrolyzer`
+    /// shipped in the DLL we already vendor. This is that other side.
+    ///
+    /// Three sources, unioned, because DWSIM can construct a unit op two ways and advertise it a third:
+    ///   - `ObjectType` enum members — everything the type system knows, including legacy members with
+    ///     no factory path left.
+    ///   - `GetAvailableFlowsheetObjectTypeNames()` — the engine's own factory list. This is what
+    ///     `instantiable` reports, and it is what keeps the ledger's rows meaningful: without it, a
+    ///     dozen dead enum members demand ledger rows that say nothing.
+    ///   - `ExternalUnitOperations` — the plugin registry. **NOT empty**, contrary to what 099's own
+    ///     contract assumed ("the always-empty external set"): this build registers six, including
+    ///     Water Electrolyzer, PEM Fuel Cell, Solar Panel, Wind Turbine, Hydroelectric Turbine and a
+    ///     Reaktoro Gibbs reactor. `source` is what makes that visible instead of indistinguishable
+    ///     from "we never looked".
+    ///
+    /// `exposedAs` is a REVERSE LOOKUP over `UnitOpCatalog.Types`, computed here at response time and
+    /// never stored. That is deliberate and it is the whole reason this endpoint can be trusted: a
+    /// stored mapping is a second table free to drift from the allowlist, which is the exact defect
+    /// class this endpoint exists to expose.
+    /// </remarks>
+    private static List<EngineInventoryEntry> EngineInventory(Automation3 auto)
+    {
+        // engine ObjectType name → the runner's wire type. Reverse of the allowlist, so it cannot lie.
+        var exposed = UnitOpCatalog.Types.Values
+            .GroupBy(d => d.ObjectType.ToString(), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Type, StringComparer.Ordinal);
+
+        var instantiable = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var externals = new List<string>();
+        try
+        {
+            var fs = auto.CreateFlowsheet();
+            if (fs is not null)
+            {
+                // `.Cast<string>()` because this returns a NON-generic collection — same shape as
+                // `GetAvailablePropertyPackages()` a few lines up, which casts for the same reason.
+                //
+                // KEYED ON `Key(...)`, NOT ON THE RAW STRING. The factory list returns DISPLAY names —
+                // "Water Electrolyzer", "Gibbs Reactor (Reaktoro)" — while `ObjectType` members are
+                // Pascal-case identifiers. Comparing them raw matched only the single-word types and
+                // reported 15 instantiable against a true 49: every multi-word type looked dead. The
+                // failure was invisible in the sense that mattered, because the 15 it did report were
+                // all real, so the answer was plausible and quietly two-thirds short.
+                foreach (var n in fs.GetAvailableFlowsheetObjectTypeNames().Cast<string>())
+                    if (!string.IsNullOrWhiteSpace(n)) instantiable.Add(Key(n));
+                // `ExternalUnitOperations` is a dictionary of plugin-supplied ops. Best-effort: an
+                // engine build without the member must not fail the whole catalog.
+                if (fs.GetType().GetProperty("ExternalUnitOperations")?.GetValue(fs)
+                    is System.Collections.IDictionary ext)
+                    foreach (var k in ext.Keys) if (k is not null) externals.Add(k.ToString()!);
+            }
+        }
+        catch
+        {
+            // A reflection failure here degrades `instantiable` to false for everything, which reads
+            // as "nothing is buildable" — visibly wrong rather than quietly wrong, and the endpoint
+            // still answers. The catalog must not die because an inventory field could not be filled.
+        }
+
+        // INSTANTIABLE IS MEASURED BY CONSTRUCTING THE THING, not by reading a list.
+        //
+        // The first cut of this used `GetAvailableFlowsheetObjectTypeNames()`, and the result was
+        // self-refuting: `separator` and `mixer` came back NOT instantiable while carrying an
+        // `exposedAs` — the runner builds and solves both, in tests that pass. That list is a
+        // palette, and a palette is a statement about a GUI. Believing it would have put "the engine
+        // cannot construct a separator" into the artifact that exists to be the authority on what the
+        // engine can construct.
+        //
+        // So each type is actually added to a scratch flowsheet. Failures are expected and are the
+        // answer — a legacy enum member with no factory path throws, and that is the fact worth
+        // recording. Wrapped per type: one throwing member must not cost the other 72.
+        var probe = auto.CreateFlowsheet();
+        bool CanBuild(ObjectType t)
+        {
+            if (probe is null) return instantiable.Contains(Key(t.ToString()));
+            try { return probe.AddObject(t, 50, 50, $"probe_{t}") is not null; }
+            catch { return false; }
+        }
+
+        var entries = Enum.GetNames<ObjectType>()
+            .Select(name => new EngineInventoryEntry(
+                Name: name,
+                DisplayName: Humanize(name),
+                Source: "enum",
+                Instantiable: Enum.TryParse<ObjectType>(name, out var ot)
+                    ? CanBuild(ot)
+                    // Unparseable is a contradiction (the name came FROM the enum), so fall back to
+                    // the palette rather than silently reporting false.
+                    : instantiable.Contains(Key(name)),
+                ExposedAs: exposed.TryGetValue(name, out var wire) ? wire : null))
+            .ToList();
+
+        // Dedup on `Key(...)` for the same reason. `WaterElectrolyzer` is BOTH an `ObjectType` member
+        // and an external unit operation called "Water Electrolyzer", so a raw comparison listed one
+        // unit op twice — once as an enum member reported not instantiable, once as an external
+        // reported instantiable. Two rows for one thing, disagreeing, in the artifact whose entire job
+        // is to be the authority on what exists.
+        var known = new HashSet<string>(entries.Select(e => Key(e.Name)), StringComparer.OrdinalIgnoreCase);
+        entries.AddRange(externals.Where(n => !known.Contains(Key(n)))
+            .Select(n => new EngineInventoryEntry(n, Humanize(n), "external", true, null)));
+
+        return entries.OrderBy(e => e.Name, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>`WaterElectrolyzer` → `Water Electrolyzer`. Presentation only — never a join key.</summary>
+    private static string Humanize(string pascal) =>
+        System.Text.RegularExpressions.Regex.Replace(pascal, "(?<=[a-z0-9])(?=[A-Z])", " ");
+
+    /// <summary>
+    /// The comparison key for one unit-op kind: alphanumerics only, case-folded.
+    /// </summary>
+    /// <remarks>
+    /// DWSIM names the same unit op three ways — `ObjectType.WaterElectrolyzer`, the factory list's
+    /// "Water Electrolyzer", and the external registry's "Gibbs Reactor (Reaktoro)" with punctuation.
+    /// Every comparison in this inventory goes through here, so a spelling difference cannot turn into
+    /// a capability claim. It is a KEY, never a display value and never a wire type: `exposedAs` still
+    /// carries the runner's real wire string.
+    /// </remarks>
+    private static string Key(string name) =>
+        new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 
     private static string ExtractVersion(Automation3 auto)
     {
@@ -563,7 +692,13 @@ static class Modes
 // ── mode DTOs ──────────────────────────────────────────────────────────────
 
 record CatalogResult(string EngineVersion, List<CompoundOut> Compounds,
-    List<PropertyPackageOut> PropertyPackages, object UnitOpTypes);
+    List<PropertyPackageOut> PropertyPackages, object UnitOpTypes,
+    List<EngineInventoryEntry> EngineInventory);
+
+/// One unit-op kind the engine declares. `ExposedAs` is null when this runner has no wire type for it
+/// — which is the whole point of the record: an absent capability that says so (099 FR-004).
+record EngineInventoryEntry(string Name, string DisplayName, string Source, bool Instantiable,
+    string? ExposedAs);
 record CompoundOut(string Name, string? Formula, string? CasNumber);
 record PropertyPackageOut(string Id, string Name, string Description);
 
