@@ -186,6 +186,18 @@ app.MapGet("/catalog/unit-op-types", (CancellationToken ct) => CatalogSection("u
 // the already version-keyed catalog payload, so it inherits its cache: no new worker mode, no second
 // cache to go stale against the first.
 app.MapGet("/catalog/engine-inventory", (CancellationToken ct) => CatalogSection("engineInventory", ct));
+// The unit vocabulary this runner ACCEPTS. Served straight from `DocumentValidator` rather than
+// through the worker catalog, because that dictionary is the thing that accepts or rejects a unit —
+// anything else would be a second opinion about the first — and the worker cannot see this assembly.
+//
+// It exists so iskra's `RUNNER_UNITS` can be CHECKED. That table is this one transcribed into
+// TypeScript and nothing compared them: app stricter drops a value before it ships, runner stricter
+// refuses it with INVALID_UNIT after it does, and both surface far from the edit that caused them.
+app.MapGet("/catalog/units", () =>
+{
+    var (_, probedVersion, _) = ProbeDwsim();
+    return Results.Json(new { engineVersion = probedVersion, units = DocumentValidator.UnitVocabulary });
+});
 
 async Task<IResult> CatalogSection(string section, CancellationToken ct)
 {

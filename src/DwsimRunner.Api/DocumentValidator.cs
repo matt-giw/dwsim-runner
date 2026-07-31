@@ -88,6 +88,23 @@ public static class DocumentValidator
         ["string"] = [],
     };
 
+    /// <summary>
+    /// The unit vocabulary this runner ACCEPTS, published so a client can check its own copy.
+    /// </summary>
+    /// <remarks>
+    /// iskra's `RUNNER_UNITS` is this table transcribed into TypeScript, and until 2026-07-31
+    /// nothing compared them: the app's own tests only asserted the table agreed with itself. The
+    /// two halves have to match exactly or a value is dropped before it ships (app stricter) or
+    /// refused with INVALID_UNIT after it does (runner stricter), and both failures surface a long
+    /// way from the edit that caused them.
+    ///
+    /// Serving it from HERE and not from the worker's catalog is deliberate: this dictionary is
+    /// what actually accepts or rejects a unit, so publishing anything else would be a second
+    /// opinion about the first, and the worker cannot see this assembly anyway.
+    /// </remarks>
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> UnitVocabulary { get; } =
+        Units.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<string>)kv.Value, StringComparer.Ordinal);
+
     private static readonly HashSet<string> AllKnownUnits =
         Units.Values.SelectMany(u => u).ToHashSet(StringComparer.OrdinalIgnoreCase);
 

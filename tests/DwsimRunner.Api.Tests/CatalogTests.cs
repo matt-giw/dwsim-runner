@@ -85,4 +85,34 @@ public class CatalogTests
         var body = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync());
         Assert.Equal("ENGINE_UNAVAILABLE", body.GetProperty("error").GetString());
     }
+
+    // The unit vocabulary, published so a CLIENT can check its own copy against it.
+    //
+    // iskra's `RUNNER_UNITS` is this table transcribed into TypeScript, and nothing compared them:
+    // its tests only asserted the table agreed with itself. App stricter drops a value before it
+    // ships; runner stricter refuses it with INVALID_UNIT after it does.
+    [Fact]
+    public async Task Units_publishes_the_vocabulary_the_validator_enforces()
+    {
+        using var host = new RunnerHost();
+
+        var resp = await host.Client.GetAsync("/catalog/units");
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync());
+        var units = body.GetProperty("units");
+
+        // Not a copy of the table — the SAME object the validator rejects with. Anything else here
+        // would be a second opinion about the first, which is the defect this endpoint exists to end.
+        foreach (var (quantity, spellings) in DocumentValidator.UnitVocabulary)
+        {
+            var published = units.GetProperty(quantity).EnumerateArray().Select(u => u.GetString()).ToList();
+            Assert.Equal(spellings, published);
+        }
+        Assert.Equal(DocumentValidator.UnitVocabulary.Count, units.EnumerateObject().Count());
+
+        // One spot check with real content, so a vocabulary that serialised as empty objects cannot
+        // satisfy the loop above by vacuous agreement.
+        Assert.Contains("bar", units.GetProperty("pressure").EnumerateArray().Select(u => u.GetString()));
+    }
 }
