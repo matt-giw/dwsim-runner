@@ -4,13 +4,25 @@
 # DWSIM binaries — only this wrapper (source available) and the iskra app.
 #
 # Build note: compiling the Worker requires DWSIM assemblies present at build
-# time (reference-only, Private=false). Build with the SDK stage pointing at
-# your dev copy — those DLLs are used for compilation metadata only and are
-# NOT copied into the publish output or this image.
+# time (reference-only, Private=false). They are fetched into the BUILD stage
+# only, are used for compilation metadata, and are NOT copied into the publish
+# output or the runtime stage below — asserted mechanically twice, at the end of
+# this stage and again by scripts/verify-no-conveyance.sh against the final image.
+#
+# This stage used to `COPY dwsim/ /opt/dwsim/` from the build context. That broke
+# silently when the SaaS Dockerfile moved to an in-build fetch and `.dockerignore`
+# gained a `dwsim/` line: the directory stops being uploaded as context, so the
+# COPY fails with `"/dwsim": not found` and THIS IMAGE CANNOT BE BUILT AT ALL.
+# Which means `verify-no-conveyance.sh` — the load-bearing Constitution IV proof —
+# could not run either, and CI does not invoke it, so nothing said so. Fetching
+# here mirrors the SaaS Dockerfile and makes the check runnable from a clean clone.
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
-COPY dwsim/ /opt/dwsim/
+COPY scripts/fetch-dwsim.sh ./scripts/
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && scripts/fetch-dwsim.sh /opt/dwsim
 ENV DWSIM_PATH=/opt/dwsim
 COPY src/ ./src/
 RUN dotnet publish src/DwsimRunner.Api    -c Release -o /out/api && \

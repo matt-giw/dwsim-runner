@@ -65,6 +65,27 @@ public class BuildSolveEndpointTests
         Assert.NotEmpty(body.GetProperty("streams").EnumerateArray());
     }
 
+    // 120 US1 (T007): the per-phase fields cross the API as the worker emitted them —
+    // the API is a passthrough and must not strip or rename phase/vaporFraction/phases.
+    [Fact]
+    public async Task Per_phase_stream_fields_pass_through_verbatim()
+    {
+        using var host = new RunnerHost();
+
+        var resp = await host.Client.PostAsync("/flowsheets/build-solve", DocBody(ValidDoc));
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>(Json);
+        var vap = body.GetProperty("streams").EnumerateArray()
+                      .First(s => s.GetProperty("name").GetString() == "VAP");
+        Assert.Equal("vapor", vap.GetProperty("phase").GetString());
+        Assert.Equal(1.0, vap.GetProperty("vaporFraction").GetDouble());
+        var block = Assert.Single(vap.GetProperty("phases").EnumerateArray());
+        Assert.Equal("vapor", block.GetProperty("name").GetString());
+        Assert.Equal(1.0, block.GetProperty("moleFraction").GetDouble());
+        Assert.Equal(48.2, block.GetProperty("densityKgM3").GetDouble());
+    }
+
     [Fact]
     public async Task Non_convergence_is_200_with_converged_false()
     {

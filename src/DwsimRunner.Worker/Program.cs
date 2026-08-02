@@ -110,7 +110,20 @@ record StreamRow(string Name, string? Phase, double? TemperatureC, double? Press
                  double? DensityKgM3 = null,
                  // Mass basis, because a separation is stated that way. Nullable and last: absence is
                  // "the engine did not report it", never an implied zero.
-                 Dictionary<string, double>? CompositionMass = null);
+                 Dictionary<string, double>? CompositionMass = null,
+                 // 120 US1: molar vapor fraction and one block per phase actually present.
+                 // Phase (above) is now DERIVED from these, never from Phases[0] — the Mixture
+                 // phase's molarfraction is 1.0 by definition, which made the old label noise.
+                 double? VaporFraction = null,
+                 List<StreamPhaseBlock>? Phases = null);
+
+// Physics-named phase blocks ("vapor"/"liquid"/"liquid2"/"solid") — never engine slot indexes.
+record StreamPhaseBlock(string Name, double MoleFraction,
+                        Dictionary<string, double>? Composition = null,
+                        double? DensityKgM3 = null,
+                        double? MolecularWeight = null,
+                        double? HeatCapacityKJKgK = null,
+                        double? ViscosityPaS = null);
 record EnergyRow(string Name, double? DutyKw);
 record UnitOpRow(string Name, string Type, double? PowerKw, double? DutyKw,
                  double? OutletTemperatureC, double? OutletPressureBar);
@@ -184,33 +197,17 @@ static class Solver
         return new InventoryResult(objects);
     }
 
-    // Reflection read of a numeric engine property (e.g. DeltaQ) — unit-op
-    // classes vary; a missing/non-finite value is null, never an error.
-    private static double? Num(object obj, string property)
+    // ONE override application, shared by the template path (Run) and — since 120 US5 —
+    // the document path (Modes.BuildSolve, for /compare and /optimize document cases).
+    // Extracted for the same reason the harvest was: two callers drifting is how a property
+    // gets settable on one solve path and not the other.
+    internal static void ApplyOverrides(DWSIM.Interfaces.IFlowsheet fs, List<Override>? overrides)
     {
-        try
-        {
-            var value = obj.GetType().GetProperty(property)?.GetValue(obj);
-            if (value is null) return null;
-            var d = Convert.ToDouble(value);
-            return double.IsFinite(d) ? d : null;
-        }
-        catch { return null; }
-    }
-
-    public static SolveResult Run(Job job)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var warnings = new List<string>();
-
-        var (auto, fs) = Load(job.Template ?? throw new WorkerInputException("INVALID_REQUEST", "template is required for solve mode"));
-
         string AvailableTags() =>
             "available: " + string.Join(", ",
                 fs.SimulationObjects.Values.Select(o => o.GraphicObject.Tag).OrderBy(x => x));
 
-        // ── apply overrides ────────────────────────────────────────────────
-        foreach (var ov in job.Overrides ?? [])
+        foreach (var ov in overrides ?? [])
         {
             var obj = fs.GetFlowsheetSimulationObject(ov.Object)
                       ?? throw new WorkerInputException("INVALID_OBJECT",
@@ -242,6 +239,30 @@ static class Solver
                 }
             }
         }
+    }
+
+    // Reflection read of a numeric engine property (e.g. DeltaQ) — unit-op
+    // classes vary; a missing/non-finite value is null, never an error.
+    private static double? Num(object obj, string property)
+    {
+        try
+        {
+            var value = obj.GetType().GetProperty(property)?.GetValue(obj);
+            if (value is null) return null;
+            var d = Convert.ToDouble(value);
+            return double.IsFinite(d) ? d : null;
+        }
+        catch { return null; }
+    }
+
+    public static SolveResult Run(Job job)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var warnings = new List<string>();
+
+        var (auto, fs) = Load(job.Template ?? throw new WorkerInputException("INVALID_REQUEST", "template is required for solve mode"));
+
+        ApplyOverrides(fs, job.Overrides);
 
         // ── solve ──────────────────────────────────────────────────────────
         auto.CalculateFlowsheet2(fs);

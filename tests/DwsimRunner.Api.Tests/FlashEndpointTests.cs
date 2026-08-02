@@ -204,4 +204,43 @@ public class FlashEndpointTests
             "the flash response carries no densityKgM3 field");
         Assert.Equal(52.31, d.GetDouble(), 3);
     }
+
+    // 120 US2 (T014) — the API precheck accepts the four new pairs and still rejects the
+    // solids pairs. The precheck DUPLICATES the worker's switch by design (50 ms answers,
+    // no spawn); during 120 the API vetoed the worker's new pairs for a whole debugging
+    // session because only one side was extended — these pin both sides agreeing.
+    [Theory]
+    [InlineData("PVF", "pressure", "vaporFraction")]
+    [InlineData("TVF", "temperature", "vaporFraction")]
+    public async Task New_pairs_pass_the_precheck_and_reach_the_worker(string flashType, string a, string b)
+    {
+        using var host = new RunnerHost();
+        var req = BaseRequest(flashType);
+        req[a] = Spec(a == "vaporFraction" ? 0.5 : 25, a == "temperature" ? "C" : a == "pressure" ? "bar" : a == "enthalpy" ? "kJ/kg" : "");
+        req[b] = Spec(b == "vaporFraction" ? 0.5 : 100, b == "temperature" ? "C" : b == "pressure" ? "bar" : b == "entropy" ? "kJ/[kg.K]" : b == "enthalpy" ? "kJ/kg" : "");
+
+        var resp = await host.Client.PostAsJsonAsync("/flash", req);
+
+        // FakeWorker answers any accepted flash with the canned result — a 200 here proves
+        // the precheck let the pair through; a 400 would be the API vetoing the worker again.
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("PSF")]   // solids ledgered will-not-yet
+    [InlineData("TSF")]
+    [InlineData("TH")]    // measured engine crash 2026-08-01 — refused, not exposed
+    [InlineData("TS")]
+    public async Task Solid_fraction_pairs_stay_rejected_by_decision(string flashType)
+    {
+        using var host = new RunnerHost();
+        var req = BaseRequest(flashType);
+        req["pressure"] = Spec(1.01325, "bar");
+        req["temperature"] = Spec(25, "C");
+
+        var resp = await host.Client.PostAsJsonAsync("/flash", req);
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Contains("FLASH_INVALID", await resp.Content.ReadAsStringAsync());
+    }
 }

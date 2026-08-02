@@ -246,6 +246,11 @@ static class Modes
 
         var (fs, build, warnings) = FlowsheetBuilder.Build(auto, FlowsheetBuilder.ParseDocument(doc));
 
+        // 120 US5 — document-scoped /compare and /optimize cases: the same per-case
+        // overrides the template path applies, via the same shared helper (drift is how a
+        // property becomes settable on one solve path and not the other).
+        Solver.ApplyOverrides(fs, job.Overrides);
+
         // ── solve ──────────────────────────────────────────────────────────
         auto.CalculateFlowsheet2(fs);
         bool converged = fs.Solved;
@@ -329,9 +334,52 @@ static class Modes
             if (c.MassFraction is double xf && double.IsFinite(xf) && xf > 1e-9)
                 compMass[c.Name] = Math.Round(xf, 6);
         }
+        // 120 US1: per-phase blocks, iterated by the phase's NAME — never its slot index.
+        // Phases[0] is the MIXTURE aggregate (molarfraction 1.0 by definition), which is exactly
+        // why the old label (`Phases[0].Properties.molarfraction == 1 ? "vapor" : null`) was noise
+        // in both directions. "OverallLiquid" is likewise an aggregate of the liquid slots and is
+        // skipped. Everything asserted here is pinned by Tier B PerPhaseTests against the live
+        // engine (liquid water is liquid), per specs/036-runner-fidelity/research.md:390.
+        var blocks = new List<StreamPhaseBlock>();
+        var liquidSeen = 0;
+        foreach (var p in ms.Phases.Values)
+        {
+            var engineName = p.Name ?? "";
+            if (engineName is "Mixture" or "OverallLiquid") continue;
+            if (p.Properties.molarfraction is not double beta || !double.IsFinite(beta) || beta <= 1e-9)
+                continue;
+
+            string name;
+            if (engineName.StartsWith("Vapor", StringComparison.OrdinalIgnoreCase)) name = "vapor";
+            else if (engineName.StartsWith("Solid", StringComparison.OrdinalIgnoreCase)) name = "solid";
+            else name = ++liquidSeen == 1 ? "liquid" : "liquid2";   // Liquid1/Liquid2/Liquid3/Aqueous
+
+            var phaseComp = new Dictionary<string, double>();
+            foreach (var c in p.Compounds.Values)
+                if (c.MoleFraction is double pmf && double.IsFinite(pmf) && pmf > 1e-9)
+                    phaseComp[c.Name] = Math.Round(pmf, 6);
+
+            blocks.Add(new StreamPhaseBlock(
+                Name: name,
+                MoleFraction: Math.Round(beta, 6),
+                Composition: phaseComp.Count > 0 ? phaseComp : null,
+                DensityKgM3: Round(p.Properties.density),
+                MolecularWeight: Round(p.Properties.molecularWeight),
+                HeatCapacityKJKgK: Round(p.Properties.heatCapacityCp, 0, 1, 4),
+                // Pa*s, magnitude ~1e-3..1e-5: fixed 3 decimals would DESTROY it (the entropy
+                // lesson a hundred lines down) — 8 decimals keeps ~4 significant figures.
+                ViscosityPaS: Round(p.Properties.viscosity, 0, 1, 8)));
+        }
+        var vaporFraction = blocks.FirstOrDefault(b => b.Name == "vapor")?.MoleFraction ?? 0.0;
+        string? phaseLabel = blocks.Count == 0 ? null
+            : vaporFraction > 0.9999 ? "vapor"
+            : vaporFraction < 1e-4
+                ? (blocks.All(b => b.Name == "solid") ? "solid" : "liquid")
+                : "two-phase";
+
         return new StreamRow(
             Name:           ms.GraphicObject.Tag,
-            Phase:          ms.Phases[0].Properties.molarfraction == 1 ? "vapor" : null,
+            Phase:          phaseLabel,
             TemperatureC:   Round(ms.Phases[0].Properties.temperature, -273.15),
             // SIX decimals of bar (0.1 Pa), not three. At three, 1.01325 bar — one atmosphere —
             // came back as 1.013, and a caller asking for pascals got 101300 instead of 101325. The
@@ -350,7 +398,9 @@ static class Modes
             // pressure (Pa -> bar) above. Getting that wrong is the enthalpy/1000 bug in this file's
             // own comments: self-consistent, unflagged, and wrong by three orders of magnitude.
             DensityKgM3:    Round(ms.Phases[0].Properties.density),
-            CompositionMass: compMass.Count > 0 ? compMass : null);
+            CompositionMass: compMass.Count > 0 ? compMass : null,
+            VaporFraction:  blocks.Count > 0 ? Math.Round(vaporFraction, 6) : null,
+            Phases:         blocks.Count > 0 ? blocks : null);
 
         static double? Round(double? si, double offset = 0, double scale = 1, int digits = 3) =>
             si is double v && double.IsFinite(v) ? Math.Round(v * scale + offset, digits) : null;
@@ -507,8 +557,25 @@ static class Modes
                 spec1 = RequireSi(flash.Pressure, "pressure", "bar");
                 spec2 = RequireSi(flash.Entropy, "entropy", "kJ/kg.K");
                 break;
+            // 120 US2 — the remaining measurable pairs, by MEASUREMENT (2026-08-01, 9.0.5.0):
+            // - PVF/TVF work (TVF finds Psat(100 C) = 1.014 bar) and are exposed below.
+            // - TH/TS (TemperatureEnthalpy/TemperatureEntropy) CRASH the engine — hard worker
+            //   death, not an exception — under both STEAM and PR. Deliberately NOT exposed;
+            //   the capability fixture records the crash verdict. Re-measure before re-adding.
+            // - PSF/TSF (solid fraction): solids are ledgered will-not-yet (no flash-algorithm
+            //   selection), so a solid-fraction flash would be a knob wired to nothing.
+            case "PVF":
+                calcType = DWSIM.Interfaces.Enums.FlashCalculationType.PressureVaporFraction;
+                spec1 = RequireSi(flash.Pressure, "pressure", "bar");
+                spec2 = RequireSi(flash.VaporFraction, "vaporFraction", "");
+                break;
+            case "TVF":
+                calcType = DWSIM.Interfaces.Enums.FlashCalculationType.TemperatureVaporFraction;
+                spec1 = RequireSi(flash.Temperature, "temperature", "K");
+                spec2 = RequireSi(flash.VaporFraction, "vaporFraction", "");
+                break;
             default:
-                throw new WorkerInputException("FLASH_INVALID", $"flashType '{flash.FlashType}' not supported (TP|PH|PS)");
+                throw new WorkerInputException("FLASH_INVALID", $"flashType '{flash.FlashType}' not supported (TP|PH|PS|PVF|TVF)");
         }
 
         var result = package.CalculateEquilibrium2(calcType, spec1, spec2, 1.0);
@@ -717,7 +784,9 @@ record TemplateOut(string Id, string Source, bool SavedAtSave);
 
 record FlashRequest(List<string> Compounds, FlowComposition Composition, string PropertyPackage,
     string FlashType, FlowQuantity? Temperature, FlowQuantity? Pressure,
-    FlowQuantity? Enthalpy, FlowQuantity? Entropy);
+    FlowQuantity? Enthalpy, FlowQuantity? Entropy,
+    // 120 US2 — dimensionless molar vapor fraction spec for PVF/TVF.
+    FlowQuantity? VaporFraction = null);
 
 record FlashResult(double VaporFraction, double? TemperatureC, double? PressureBar,
     List<PhaseOut> Phases, double? EnthalpyKJKg, double? EntropyKJKgK,

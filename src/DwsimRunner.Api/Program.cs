@@ -186,6 +186,18 @@ app.MapGet("/catalog/unit-op-types", (CancellationToken ct) => CatalogSection("u
 // the already version-keyed catalog payload, so it inherits its cache: no new worker mode, no second
 // cache to go stale against the first.
 app.MapGet("/catalog/engine-inventory", (CancellationToken ct) => CatalogSection("engineInventory", ct));
+// The unit vocabulary this runner ACCEPTS. Served straight from `DocumentValidator` rather than
+// through the worker catalog, because that dictionary is the thing that accepts or rejects a unit —
+// anything else would be a second opinion about the first — and the worker cannot see this assembly.
+//
+// It exists so iskra's `RUNNER_UNITS` can be CHECKED. That table is this one transcribed into
+// TypeScript and nothing compared them: app stricter drops a value before it ships, runner stricter
+// refuses it with INVALID_UNIT after it does, and both surface far from the edit that caused them.
+app.MapGet("/catalog/units", () =>
+{
+    var (_, probedVersion, _) = ProbeDwsim();
+    return Results.Json(new { engineVersion = probedVersion, units = DocumentValidator.UnitVocabulary });
+});
 
 async Task<IResult> CatalogSection(string section, CancellationToken ct)
 {
@@ -479,7 +491,15 @@ static string? FlashPrecheck(JsonElement flash)
         "TP" => Has("temperature") && Has("pressure") ? null : "TP flash requires temperature and pressure specs",
         "PH" => Has("pressure") && Has("enthalpy") ? null : "PH flash requires pressure and enthalpy specs",
         "PS" => Has("pressure") && Has("entropy") ? null : "PS flash requires pressure and entropy specs",
-        _ => $"flashType '{flashType}' not supported (TP|PH|PS)",
+        // 120 US2 — measured additions. TH/TS are NOT here: they crash the engine (hard
+        // worker death under STEAM and PR, measured 2026-08-01) — fixture records the
+        // verdict. PSF/TSF: solids ledgered will-not-yet. NOTE this validator duplicates
+        // the worker's switch by design (API answers in 50 ms without spawning a worker) —
+        // extend BOTH or the API vetoes the worker, which is exactly the bug hunt that
+        // produced this comment.
+        "PVF" => Has("pressure") && Has("vaporFraction") ? null : "PVF flash requires pressure and vaporFraction specs",
+        "TVF" => Has("temperature") && Has("vaporFraction") ? null : "TVF flash requires temperature and vaporFraction specs",
+        _ => $"flashType '{flashType}' not supported (TP|PH|PS|PVF|TVF)",
     };
 }
 
@@ -533,7 +553,7 @@ static IResult PngOrError(HttpContext http, CaseOutcome outcome)
 // Document-mode worker spawn: writes {mode, document|flash, savePath?}
 // and maps exit codes (reusing the same concurrency gate + admission control as /solve).
 // Worker payload shapes mirror the FakeWorker's expectations.
-async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, TimeSpan timeout, string? savePath, CancellationToken ct, string payloadKey = "document")
+async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, TimeSpan timeout, string? savePath, CancellationToken ct, string payloadKey = "document", List<PropertyOverride>? overrides = null)
 {
     var solveId = Guid.NewGuid().ToString("N")[..8];
     var clock = Stopwatch.StartNew();
@@ -554,6 +574,7 @@ async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, 
     {
         var job = new Dictionary<string, object?> { ["mode"] = mode, [payloadKey] = document };
         if (savePath is not null) job["savePath"] = savePath;
+        if (overrides is { Count: > 0 }) job["overrides"] = overrides;   // 120 US5 document cases
         await File.WriteAllTextAsync(jobFile, JsonSerializer.Serialize(job, Program.JsonOpts), ct);
 
         await gate.WaitAsync(ct);
@@ -658,8 +679,22 @@ app.MapPost("/solve", async (SolveRequest req, HttpContext http, CancellationTok
 
 app.MapPost("/compare", async (CompareRequest req, HttpContext http, CancellationToken ct) =>
 {
-    var (templateFile, error) = ResolveTemplate(req.TemplateId);
-    if (error is not null) return error;
+    // 120 US5 — templateId XOR document. A sweep is a compare whose cases the caller
+    // expanded from a range; there is deliberately no /sweep endpoint.
+    var hasDoc = req.Document is { ValueKind: JsonValueKind.Object };
+    if (hasDoc && !string.IsNullOrEmpty(req.TemplateId))
+        return ErrorResult(StatusCodes.Status400BadRequest, "CONFLICTING_PARAMETERS",
+            "provide templateId or document, not both");
+    if (!hasDoc && string.IsNullOrEmpty(req.TemplateId))
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "provide templateId or document");
+
+    string? templateFile = null;
+    if (!hasDoc)
+    {
+        (templateFile, var error) = ResolveTemplate(req.TemplateId!);
+        if (error is not null) return error;
+    }
 
     if (req.Cases is not { Count: >= 1 and <= 25 })
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
@@ -677,10 +712,13 @@ app.MapPost("/compare", async (CompareRequest req, HttpContext http, Cancellatio
     var timeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
 
     // Fan out concurrently — each case flows through the same semaphore + cache
-    // as /solve, so results are identical across endpoints (FR-008).
+    // as /solve (or build-solve for document cases), so results are identical
+    // across endpoints (FR-008).
     var caseTasks = req.Cases.ToDictionary(
         kv => kv.Key,
-        kv => RunCaseAsync(req.TemplateId, templateFile!, kv.Value ?? [], timeout, ct));
+        kv => hasDoc
+            ? RunDocumentCaseAsync(req.Document!.Value, kv.Value ?? [], timeout, ct)
+            : RunCaseAsync(req.TemplateId!, templateFile!, kv.Value ?? [], timeout, ct));
     await Task.WhenAll(caseTasks.Values);
 
     // Bodies are raw JSON strings (SolveResult or CaseError) — stitch by hand.
@@ -707,8 +745,21 @@ app.MapPost("/compare", async (CompareRequest req, HttpContext http, Cancellatio
 // sequentially (the search is inherently sequential).
 app.MapPost("/optimize", async (OptimizeRequest req, HttpContext http, CancellationToken ct) =>
 {
-    var (templateFile, error) = ResolveTemplate(req.TemplateId);
-    if (error is not null) return error;
+    // 120 US5 — templateId XOR document, same rule as /compare.
+    var hasDoc = req.Document is { ValueKind: JsonValueKind.Object };
+    if (hasDoc && !string.IsNullOrEmpty(req.TemplateId))
+        return ErrorResult(StatusCodes.Status400BadRequest, "CONFLICTING_PARAMETERS",
+            "provide templateId or document, not both");
+    if (!hasDoc && string.IsNullOrEmpty(req.TemplateId))
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "provide templateId or document");
+
+    string? templateFile = null;
+    if (!hasDoc)
+    {
+        (templateFile, var error) = ResolveTemplate(req.TemplateId!);
+        if (error is not null) return error;
+    }
 
     if (req.Variable is not { } variable || string.IsNullOrEmpty(variable.Object) || string.IsNullOrEmpty(variable.Property))
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
@@ -736,7 +787,9 @@ app.MapPost("/optimize", async (OptimizeRequest req, HttpContext http, Cancellat
         {
             var overrides = new List<PropertyOverride>
                 { new(variable.Object, variable.Property, value, variable.Unit) };
-            var solve = await RunCaseAsync(req.TemplateId!, templateFile!, overrides, timeout, ct);
+            var solve = hasDoc
+                ? await RunDocumentCaseAsync(req.Document!.Value, overrides, timeout, ct)
+                : await RunCaseAsync(req.TemplateId!, templateFile!, overrides, timeout, ct);
             if (solve.Status != StatusCodes.Status200OK)
                 return new OptEvaluation(value, null, false, solve.Body);
             var converged = false;
@@ -824,6 +877,23 @@ static string ErrorBody(string error, string message) =>
     JsonSerializer.Serialize(new { error, message });
 
 // One solve case end-to-end: cache → admission control → worker process →
+// 120 US5 — one DOCUMENT case: build-solve with per-case overrides, cached like every
+// other solve (KeyForDocument + canonicalized overrides), so document compares and
+// optimizations hit the same cache a repeated build-solve would.
+async Task<CaseOutcome> RunDocumentCaseAsync(JsonElement document,
+    List<PropertyOverride> overrides, TimeSpan timeout, CancellationToken ct)
+{
+    var overrideKey = string.Join("|", overrides.Select(o => $"{o.Object} {o.Property} {o.Value} {o.Unit}"));
+    var cacheKey = ResultCache.KeyForDocument(document, $"case|{overrideKey}|{catalogVersionKey ?? "unknown"}");
+    if (cache.TryGet(cacheKey, out var cached))
+        return new(StatusCodes.Status200OK, cached);
+
+    var outcome = await RunDocumentModeAsync(document, "build-solve", timeout, null, ct, overrides: overrides);
+    if (outcome.Status == StatusCodes.Status200OK)
+        cache.Set(cacheKey, outcome.Body);
+    return outcome;
+}
+
 // exit-code mapping. Shared by /solve (and /compare later). Returns the HTTP
 // status and the exact JSON body.
 async Task<CaseOutcome> RunCaseAsync(string templateId, string templateFile,
@@ -1034,10 +1104,10 @@ static string WorkerErrorOrDefault(string stdout, string fallbackCode, string fa
 
 record WorkerRun(int? ExitCode, string Stdout, string Stderr);
 record SolveRequest(string TemplateId, List<PropertyOverride>? Overrides, int? TimeoutSeconds);
-record CompareRequest(string TemplateId, Dictionary<string, List<PropertyOverride>?>? Cases, int? TimeoutSeconds);
+record CompareRequest(string? TemplateId, JsonElement? Document, Dictionary<string, List<PropertyOverride>?>? Cases, int? TimeoutSeconds);
 record OptimizeVariable(string Object, string Property, string? Unit, double Min, double Max);
 record OptimizeObjective(string Object, string Property, string Direction);
-record OptimizeRequest(string? TemplateId, OptimizeVariable? Variable, OptimizeObjective? Objective,
+record OptimizeRequest(string? TemplateId, JsonElement? Document, OptimizeVariable? Variable, OptimizeObjective? Objective,
     double? Tolerance, int? MaxEvaluations, int? TimeoutSeconds);
 public record PropertyOverride(string Object, string Property, double Value, string? Unit);
 record CaseOutcome(int Status, string Body);
