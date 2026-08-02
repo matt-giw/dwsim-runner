@@ -58,6 +58,101 @@ public class ValidateTests
         Assert.Contains("Vapor Outlet", issue.GetProperty("message").GetString());   // valid ports named
     }
 
+    // FlashDrumDoc's shape with LIQ (and its connection) omitted: one dangling required port.
+    internal const string DanglingPortDoc = """
+    {
+      "schemaVersion": 1,
+      "name": "dangling required port",
+      "compounds": ["Methane", "Ethane"],
+      "propertyPackage": "PR",
+      "objects": [
+        { "tag": "FEED", "kind": "materialStream",
+          "spec": { "temperature": { "value": -40, "unit": "C" },
+                    "pressure": { "value": 10, "unit": "bar" },
+                    "massFlow": { "value": 100, "unit": "kg/h" },
+                    "composition": { "basis": "molar",
+                                     "fractions": { "Methane": 0.5, "Ethane": 0.5 } } } },
+        { "tag": "V-1", "kind": "unitOp", "type": "separator" },
+        { "tag": "VAP", "kind": "materialStream" }
+      ],
+      "connections": [
+        { "from": "FEED", "to": "V-1", "port": "Inlet" },
+        { "from": "V-1", "to": "VAP", "port": "Vapor Outlet" }
+      ]
+    }
+    """;
+
+    // 121 T001 — pins for the required-port enforcement (`DocumentValidator.cs`, 19e4d60).
+    // The check shipped 2026-07-30 with ZERO tests referencing MISSING_REQUIRED_PORT: it
+    // could be deleted and every tier stayed green. These pin the refusal, the naming, and
+    // the collect-all property. (Red demonstrated against pre-19e4d60 behavior, where this
+    // exact document returned valid:true — specs/121 research.md R1.)
+    [SkippableFact]
+    public async Task Dangling_required_port_is_refused_naming_unit_and_port()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        // The flash drum with the separator's required 'Liquid Outlet' unpiped. DWSIM
+        // dereferences that outlet unconditionally at Calculate. (Self-contained rather
+        // than a Replace over FlashDrumDoc — raw-string dedent makes textual surgery
+        // whitespace-coupled.)
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/validate", ValidateBody(DanglingPortDoc));
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var r = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync());
+        Assert.False(r.GetProperty("valid").GetBoolean());
+        var issue = r.GetProperty("issues").EnumerateArray()
+            .First(i => i.GetProperty("code").GetString() == "MISSING_REQUIRED_PORT");
+        Assert.Equal("V-1", issue.GetProperty("tag").GetString());
+        Assert.Contains("Liquid Outlet", issue.GetProperty("message").GetString());
+    }
+
+    [SkippableFact]
+    public async Task Two_units_with_dangling_ports_are_both_reported_in_one_response()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        // Collect-all (FR-VAL-003): two separators, each missing its liquid outlet — both
+        // issues in one response, not first-failure.
+        const string doc = """
+        {
+          "schemaVersion": 1,
+          "name": "collect-all dangling ports",
+          "compounds": ["Methane", "Ethane"],
+          "propertyPackage": "PR",
+          "objects": [
+            { "tag": "FEED", "kind": "materialStream",
+              "spec": { "temperature": { "value": -40, "unit": "C" },
+                        "pressure": { "value": 10, "unit": "bar" },
+                        "massFlow": { "value": 100, "unit": "kg/h" },
+                        "composition": { "basis": "molar",
+                                         "fractions": { "Methane": 0.5, "Ethane": 0.5 } } } },
+            { "tag": "V-1", "kind": "unitOp", "type": "separator" },
+            { "tag": "MID", "kind": "materialStream" },
+            { "tag": "V-2", "kind": "unitOp", "type": "separator" },
+            { "tag": "VAP", "kind": "materialStream" }
+          ],
+          "connections": [
+            { "from": "FEED", "to": "V-1", "port": "Inlet" },
+            { "from": "V-1", "to": "MID", "port": "Vapor Outlet" },
+            { "from": "MID", "to": "V-2", "port": "Inlet" },
+            { "from": "V-2", "to": "VAP", "port": "Vapor Outlet" }
+          ]
+        }
+        """;
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/validate", ValidateBody(doc));
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var r = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync());
+        Assert.False(r.GetProperty("valid").GetBoolean());
+        var tags = r.GetProperty("issues").EnumerateArray()
+            .Where(i => i.GetProperty("code").GetString() == "MISSING_REQUIRED_PORT")
+            .Select(i => i.GetProperty("tag").GetString())
+            .OrderBy(t => t)
+            .ToArray();
+        Assert.Equal(new[] { "V-1", "V-2" }, tags);
+    }
+
     [SkippableFact]
     public async Task Valid_document_passes_semantic_validation()
     {

@@ -53,6 +53,32 @@ public class BuildSolveTests
               .First(s => s.GetProperty("name").GetString() == name)
               .GetProperty("massFlowKgH").GetDouble();
 
+    // 121 T002 — the required-port refusal also guards the SOLVE door, pre-engine: the same
+    // DocumentValidator runs as build-solve's API precheck, so a miswired document costs no
+    // worker spawn and no engine time. This is why 121's planned "fail-fast structural tier"
+    // was not built (specs/121 research.md R2) — it already exists, here.
+    [SkippableFact]
+    public async Task Dangling_required_port_is_refused_before_the_engine()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var resp = await RunnerConnection.Client.PostAsync(
+            "/flowsheets/build-solve", BuildSolveBody(ValidateTests.DanglingPortDoc));
+        clock.Stop();
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var r = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync());
+        Assert.Equal("DOCUMENT_INVALID", r.GetProperty("error").GetString());
+        var issue = r.GetProperty("issues").EnumerateArray()
+            .First(i => i.GetProperty("code").GetString() == "MISSING_REQUIRED_PORT");
+        Assert.Equal("V-1", issue.GetProperty("tag").GetString());
+        Assert.Contains("Liquid Outlet", issue.GetProperty("message").GetString());
+        // Pre-engine: no worker spawn. Generous bound for the same reason ValidateTests
+        // gives one — the behavioral guarantee is the 400 + issue shape above.
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(30));
+    }
+
     [SkippableFact]
     public async Task Flash_drum_document_builds_solves_and_closes_the_mass_balance()
     {
