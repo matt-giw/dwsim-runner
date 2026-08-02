@@ -110,7 +110,20 @@ record StreamRow(string Name, string? Phase, double? TemperatureC, double? Press
                  double? DensityKgM3 = null,
                  // Mass basis, because a separation is stated that way. Nullable and last: absence is
                  // "the engine did not report it", never an implied zero.
-                 Dictionary<string, double>? CompositionMass = null);
+                 Dictionary<string, double>? CompositionMass = null,
+                 // 120 US1: molar vapor fraction and one block per phase actually present.
+                 // Phase (above) is now DERIVED from these, never from Phases[0] — the Mixture
+                 // phase's molarfraction is 1.0 by definition, which made the old label noise.
+                 double? VaporFraction = null,
+                 List<StreamPhaseBlock>? Phases = null);
+
+// Physics-named phase blocks ("vapor"/"liquid"/"liquid2"/"solid") — never engine slot indexes.
+record StreamPhaseBlock(string Name, double MoleFraction,
+                        Dictionary<string, double>? Composition = null,
+                        double? DensityKgM3 = null,
+                        double? MolecularWeight = null,
+                        double? HeatCapacityKJKgK = null,
+                        double? ViscosityPaS = null);
 record EnergyRow(string Name, double? DutyKw);
 record UnitOpRow(string Name, string Type, double? PowerKw, double? DutyKw,
                  double? OutletTemperatureC, double? OutletPressureBar);
