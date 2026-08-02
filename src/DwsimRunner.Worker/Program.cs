@@ -197,33 +197,17 @@ static class Solver
         return new InventoryResult(objects);
     }
 
-    // Reflection read of a numeric engine property (e.g. DeltaQ) — unit-op
-    // classes vary; a missing/non-finite value is null, never an error.
-    private static double? Num(object obj, string property)
+    // ONE override application, shared by the template path (Run) and — since 120 US5 —
+    // the document path (Modes.BuildSolve, for /compare and /optimize document cases).
+    // Extracted for the same reason the harvest was: two callers drifting is how a property
+    // gets settable on one solve path and not the other.
+    internal static void ApplyOverrides(DWSIM.Interfaces.IFlowsheet fs, List<Override>? overrides)
     {
-        try
-        {
-            var value = obj.GetType().GetProperty(property)?.GetValue(obj);
-            if (value is null) return null;
-            var d = Convert.ToDouble(value);
-            return double.IsFinite(d) ? d : null;
-        }
-        catch { return null; }
-    }
-
-    public static SolveResult Run(Job job)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var warnings = new List<string>();
-
-        var (auto, fs) = Load(job.Template ?? throw new WorkerInputException("INVALID_REQUEST", "template is required for solve mode"));
-
         string AvailableTags() =>
             "available: " + string.Join(", ",
                 fs.SimulationObjects.Values.Select(o => o.GraphicObject.Tag).OrderBy(x => x));
 
-        // ── apply overrides ────────────────────────────────────────────────
-        foreach (var ov in job.Overrides ?? [])
+        foreach (var ov in overrides ?? [])
         {
             var obj = fs.GetFlowsheetSimulationObject(ov.Object)
                       ?? throw new WorkerInputException("INVALID_OBJECT",
@@ -255,6 +239,30 @@ static class Solver
                 }
             }
         }
+    }
+
+    // Reflection read of a numeric engine property (e.g. DeltaQ) — unit-op
+    // classes vary; a missing/non-finite value is null, never an error.
+    private static double? Num(object obj, string property)
+    {
+        try
+        {
+            var value = obj.GetType().GetProperty(property)?.GetValue(obj);
+            if (value is null) return null;
+            var d = Convert.ToDouble(value);
+            return double.IsFinite(d) ? d : null;
+        }
+        catch { return null; }
+    }
+
+    public static SolveResult Run(Job job)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var warnings = new List<string>();
+
+        var (auto, fs) = Load(job.Template ?? throw new WorkerInputException("INVALID_REQUEST", "template is required for solve mode"));
+
+        ApplyOverrides(fs, job.Overrides);
 
         // ── solve ──────────────────────────────────────────────────────────
         auto.CalculateFlowsheet2(fs);

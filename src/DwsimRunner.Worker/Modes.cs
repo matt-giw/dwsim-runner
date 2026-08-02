@@ -246,6 +246,11 @@ static class Modes
 
         var (fs, build, warnings) = FlowsheetBuilder.Build(auto, FlowsheetBuilder.ParseDocument(doc));
 
+        // 120 US5 — document-scoped /compare and /optimize cases: the same per-case
+        // overrides the template path applies, via the same shared helper (drift is how a
+        // property becomes settable on one solve path and not the other).
+        Solver.ApplyOverrides(fs, job.Overrides);
+
         // ── solve ──────────────────────────────────────────────────────────
         auto.CalculateFlowsheet2(fs);
         bool converged = fs.Solved;
@@ -552,8 +557,25 @@ static class Modes
                 spec1 = RequireSi(flash.Pressure, "pressure", "bar");
                 spec2 = RequireSi(flash.Entropy, "entropy", "kJ/kg.K");
                 break;
+            // 120 US2 — the remaining measurable pairs, by MEASUREMENT (2026-08-01, 9.0.5.0):
+            // - PVF/TVF work (TVF finds Psat(100 C) = 1.014 bar) and are exposed below.
+            // - TH/TS (TemperatureEnthalpy/TemperatureEntropy) CRASH the engine — hard worker
+            //   death, not an exception — under both STEAM and PR. Deliberately NOT exposed;
+            //   the capability fixture records the crash verdict. Re-measure before re-adding.
+            // - PSF/TSF (solid fraction): solids are ledgered will-not-yet (no flash-algorithm
+            //   selection), so a solid-fraction flash would be a knob wired to nothing.
+            case "PVF":
+                calcType = DWSIM.Interfaces.Enums.FlashCalculationType.PressureVaporFraction;
+                spec1 = RequireSi(flash.Pressure, "pressure", "bar");
+                spec2 = RequireSi(flash.VaporFraction, "vaporFraction", "");
+                break;
+            case "TVF":
+                calcType = DWSIM.Interfaces.Enums.FlashCalculationType.TemperatureVaporFraction;
+                spec1 = RequireSi(flash.Temperature, "temperature", "K");
+                spec2 = RequireSi(flash.VaporFraction, "vaporFraction", "");
+                break;
             default:
-                throw new WorkerInputException("FLASH_INVALID", $"flashType '{flash.FlashType}' not supported (TP|PH|PS)");
+                throw new WorkerInputException("FLASH_INVALID", $"flashType '{flash.FlashType}' not supported (TP|PH|PS|PVF|TVF)");
         }
 
         var result = package.CalculateEquilibrium2(calcType, spec1, spec2, 1.0);
@@ -762,7 +784,9 @@ record TemplateOut(string Id, string Source, bool SavedAtSave);
 
 record FlashRequest(List<string> Compounds, FlowComposition Composition, string PropertyPackage,
     string FlashType, FlowQuantity? Temperature, FlowQuantity? Pressure,
-    FlowQuantity? Enthalpy, FlowQuantity? Entropy);
+    FlowQuantity? Enthalpy, FlowQuantity? Entropy,
+    // 120 US2 — dimensionless molar vapor fraction spec for PVF/TVF.
+    FlowQuantity? VaporFraction = null);
 
 record FlashResult(double VaporFraction, double? TemperatureC, double? PressureBar,
     List<PhaseOut> Phases, double? EnthalpyKJKg, double? EntropyKJKgK,
