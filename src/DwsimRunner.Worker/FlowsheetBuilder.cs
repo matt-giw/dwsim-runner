@@ -308,6 +308,12 @@ public static class FlowsheetBuilder
             ColumnConfigurator.Apply(so, p.Name, raw);
             return;
         }
+        // 099 US1 — `powerInput` was CONSUMED before this loop: ElectrolyzerConfigurator.Apply
+        // synthesizes the energy stream from it (the engine takes power as a stream, not a
+        // parameter). Already applied out of band, so the honest binder must not refuse it —
+        // caught by 141's T017 sweep when the refusal flipped the type's capability verdict.
+        if (def.Type is "waterElectrolyzer" && p.Name.Equals("powerInput", StringComparison.OrdinalIgnoreCase))
+            return;
         // 099 US2 — a per-compound dictionary, which the generic name→property setter cannot express.
         if (def.Type is "componentSeparator" && ComponentSeparatorConfigurator.Handles(p.Name))
         {

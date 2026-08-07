@@ -108,6 +108,28 @@ public class BinderHonestyTests
         Assert.Equal(0.7, sc.StageHeight, 10);
     }
 
+    // 141 T017 regression: `waterElectrolyzer.powerInput` is CONSUMED before the parameter
+    // loop — ElectrolyzerConfigurator.Apply synthesizes the energy stream from it (099 US1;
+    // the engine takes power as a STREAM, not a parameter), yet the loop still iterates it.
+    // The old binder dropped it into the silent SetPropertyValue no-op; the honest binder
+    // refused it (UNBINDABLE_PARAMETER) and flipped the type's capability verdict. A
+    // parameter already applied out of band is not unbindable. The unit object is a
+    // stand-in: the guard must return before the engine object is ever touched.
+    [Fact]
+    public void Electrolyzer_power_input_is_consumed_not_refused()
+    {
+        var def = UnitOpCatalog.Types["waterElectrolyzer"];
+        var p = def.Parameters.First(x => x.Name == "powerInput");
+        var unit = new FlowObject("EL-1", "unitOp", "waterElectrolyzer", null, null, null);
+        var issues = new List<BuildIssue>();
+
+        FlowsheetBuilder.ApplyParameter(new ShortcutColumn(), unit, def, p,
+            Json("""{"value":150,"unit":"kW"}"""), [],
+            (code, tag, message, path) => issues.Add(new BuildIssue("error", code, tag, path, message)));
+
+        Assert.Empty(issues);
+    }
+
     // T032 (FR-010): both column types' energy ports are declared required — the engine
     // refuses to validate without them (BaseClass.Validate, "Check the connections of the
     // object"), so a catalog saying `required: false` is a lie the document validator
