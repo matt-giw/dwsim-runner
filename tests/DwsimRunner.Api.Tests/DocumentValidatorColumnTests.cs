@@ -19,8 +19,8 @@ public class DocumentValidatorColumnTests
             { "name": "Feed", "direction": "in", "accepts": "material", "required": true },
             { "name": "Distillate", "direction": "out", "accepts": "material", "required": true },
             { "name": "Bottoms", "direction": "out", "accepts": "material", "required": true },
-            { "name": "Condenser Duty", "direction": "out", "accepts": "energy", "required": false },
-            { "name": "Reboiler Duty", "direction": "in", "accepts": "energy", "required": false } ],
+            { "name": "Condenser Duty", "direction": "out", "accepts": "energy", "required": true },
+            { "name": "Reboiler Duty", "direction": "in", "accepts": "energy", "required": true } ],
           "parameters": [
             { "name": "numberOfStages", "unitType": "integer", "required": true },
             { "name": "feedStage", "unitType": "integer", "required": true },
@@ -32,7 +32,9 @@ public class DocumentValidatorColumnTests
           "ports": [
             { "name": "Feed", "direction": "in", "accepts": "material", "required": true },
             { "name": "Distillate", "direction": "out", "accepts": "material", "required": true },
-            { "name": "Bottoms", "direction": "out", "accepts": "material", "required": true } ],
+            { "name": "Bottoms", "direction": "out", "accepts": "material", "required": true },
+            { "name": "Condenser Duty", "direction": "out", "accepts": "energy", "required": true },
+            { "name": "Reboiler Duty", "direction": "in", "accepts": "energy", "required": true } ],
           "parameters": [
             { "name": "refluxRatio", "unitType": "dimensionless", "required": true },
             { "name": "lightKey", "unitType": "string", "required": true },
@@ -67,12 +69,16 @@ public class DocumentValidatorColumnTests
             "condenserPressure": { "value": 1.0, "unit": "bar" },
             "reboilerPressure": { "value": 1.2, "unit": "bar" } } },
         { "tag": "DIST", "kind": "materialStream" },
-        { "tag": "BTMS", "kind": "materialStream" }
+        { "tag": "BTMS", "kind": "materialStream" },
+        { "tag": "Q-COND", "kind": "energyStream" },
+        { "tag": "Q-REB", "kind": "energyStream" }
       ],
       "connections": [
         { "from": "FEED", "to": "COL-1", "port": "Feed" },
         { "from": "COL-1", "to": "DIST", "port": "Distillate" },
-        { "from": "COL-1", "to": "BTMS", "port": "Bottoms" }
+        { "from": "COL-1", "to": "BTMS", "port": "Bottoms" },
+        { "from": "COL-1", "to": "Q-COND", "port": "Condenser Duty" },
+        { "from": "Q-REB", "to": "COL-1", "port": "Reboiler Duty" }
       ]
     }
     """;
@@ -155,6 +161,46 @@ public class DocumentValidatorColumnTests
         var badPressure = shortcutDoc.Replace("\"condenserPressure\": { \"value\": 1.0, \"unit\": \"bar\" }",
                                               "\"condenserPressure\": { \"value\": 5, \"unit\": \"bar\" }");
         Assert.Contains(Validate(badPressure), i => i.Code == "INVALID_PARAMETER_VALUE" && i.Tag == "COL-1");
+    }
+
+    // 141 US5 (T032, FR-010): a column with no energy streams piped is refused at document
+    // validation with the missing required port NAMED — before the engine is reached, instead
+    // of surfacing as DWSIM's opaque "Check the connections of the object" (045 row E).
+    [Theory]
+    [InlineData("distillationColumn", """ "numberOfStages": 10, "feedStage": 5, """)]
+    [InlineData("shortcutColumn", """ "lightKey": "Methanol", "heavyKey": "Water", """)]
+    public void Column_without_energy_streams_is_refused_naming_the_ports(string type, string typeParams)
+    {
+        var doc = $$"""
+        {
+          "schemaVersion": 1,
+          "compounds": ["Methanol", "Water"],
+          "propertyPackage": "NRTL",
+          "objects": [
+            { "tag": "FEED", "kind": "materialStream" },
+            { "tag": "COL-1", "kind": "unitOp", "type": "{{type}}",
+              "parameters": {
+                {{typeParams}}
+                "refluxRatio": 2.5,
+                "condenserPressure": { "value": 1.0, "unit": "bar" },
+                "reboilerPressure": { "value": 1.2, "unit": "bar" } } },
+            { "tag": "DIST", "kind": "materialStream" },
+            { "tag": "BTMS", "kind": "materialStream" }
+          ],
+          "connections": [
+            { "from": "FEED", "to": "COL-1", "port": "Feed" },
+            { "from": "COL-1", "to": "DIST", "port": "Distillate" },
+            { "from": "COL-1", "to": "BTMS", "port": "Bottoms" }
+          ]
+        }
+        """;
+
+        var issues = Validate(doc);
+
+        Assert.Contains(issues, i => i.Severity == "error" && i.Code == "MISSING_REQUIRED_PORT"
+                                     && i.Tag == "COL-1" && i.Message.Contains("Condenser Duty"));
+        Assert.Contains(issues, i => i.Severity == "error" && i.Code == "MISSING_REQUIRED_PORT"
+                                     && i.Tag == "COL-1" && i.Message.Contains("Reboiler Duty"));
     }
 
     [Fact]
