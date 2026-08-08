@@ -2,8 +2,16 @@
 // Bounded LRU for solve results (FR-013). Key = SHA-256 of templateId +
 // template file mtime + canonicalized overrides, so republishing a template
 // invalidates its entries and equivalent requests collapse to one entry.
-// Only converged results are stored (the caller decides). Values are the
-// exact response body string → cache hits are byte-identical (FR-008).
+// Values are the exact response body string → cache hits are byte-identical (FR-008).
+//
+// The caller decides what to store, and NOT everything stored is converged: the
+// document path (`/flowsheets/build-solve`, keyed by `KeyForDocument`) caches any
+// HTTP 200, and a non-convergence IS a 200 (Modes.cs: "Non-convergence is a 200 with
+// converged:false, never an error code"). That is correct — the engine is
+// deterministic and the catalog version is in the key — but it surprises anyone
+// timing solves: re-sending a byte-identical failing document returns in ~0 ms.
+// Spec 143 measured a whole grid before noticing that half its elapsed times were
+// cache hits. The outcomes were right; the timings were not measurements.
 
 using System.Globalization;
 using System.Security.Cryptography;

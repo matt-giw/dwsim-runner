@@ -132,11 +132,39 @@ internal static class ColumnConfigurator
         }
     }
 
-    /// <summary>Post-parameter pass: linear stage-pressure profile between the
-    /// condenser and reboiler pressures.</summary>
-    public static void Finish(ISimulationObject column)
+    // 143 FR-006 — the runner's iteration budget, replacing DWSIM's constructor default of 100.
+    //
+    // MEASURED, on 36 documents (3 systems × 4 stage counts × 3 reflux ratios,
+    // `specs/143-column-solver-selection/results.md`): 100 solves 18 of them, 300 solves 25,
+    // 1000 solves 28 — and every one of those 28 converges inside the deployed 60 s
+    // `SOLVE_TIMEOUT_SECONDS`, the slowest at 18.9 s. No document that converged at 100 fails at
+    // 1000; the converged set is a strict superset, which is what FR-006 requires.
+    //
+    // The cost is that a column which will NOT converge now spends up to 10× longer proving it,
+    // and past 60 s that is a timeout rather than the engine's "maximum number of iterations"
+    // message. Bounded by the timeout either way, and the app now reports a column timeout as a
+    // non-convergence rather than throwing — so the diagnosis survives the trade.
+    //
+    // NOT a method change: Naphtali-Sandholm solves 26 and is better on nine documents, but it
+    // loses methanol/water at 30 stages / reflux 3.0, which Wang-Henke converges in 5.6 s and NS
+    // does not finish in 300. One regression is one too many (FR-006). It is one `solvingMethod`
+    // away for anyone who wants it.
+    private const int DefaultMaxIterations = 1000;
+
+    /// <summary>Post-parameter pass: the linear stage-pressure profile between the condenser and
+    /// reboiler pressures, and the runner's iteration budget when the document did not state one.</summary>
+    public static void Finish(ISimulationObject column, FlowObject unitDoc)
     {
-        if (column is not DistillationColumn col || col.Stages.Count < 3) return;
+        if (column is not DistillationColumn col) return;
+
+        // Applied here rather than at construction so an explicit `maxIterations` always wins —
+        // the document is the authority, and a default that overwrote it would be the silent
+        // no-op class this repo keeps finding (023/038).
+        var stated = unitDoc.Parameters is { } prms
+            && prms.Keys.Any(k => string.Equals(k, "maxIterations", StringComparison.OrdinalIgnoreCase));
+        if (!stated) col.MaxIterations = DefaultMaxIterations;
+
+        if (col.Stages.Count < 3) return;
         var top = col.Stages[0].P;
         var bottom = col.Stages[^1].P;
         if (top <= 0 || bottom <= 0) return;
