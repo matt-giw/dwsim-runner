@@ -126,7 +126,10 @@ record StreamPhaseBlock(string Name, double MoleFraction,
                         double? ViscosityPaS = null);
 record EnergyRow(string Name, double? DutyKw);
 record UnitOpRow(string Name, string Type, double? PowerKw, double? DutyKw,
-                 double? OutletTemperatureC, double? OutletPressureBar);
+                 double? OutletTemperatureC, double? OutletPressureBar,
+                 // 143 — nullable and last (the StreamRow convention): a column's solver
+                 // configuration, read back off the engine object. Null on everything else.
+                 string? SolvingMethod = null, int? MaxIterations = null);
 record SolveResult(bool Converged, long ElapsedMs, List<StreamRow> Streams,
                    List<EnergyRow> Energy, List<UnitOpRow> UnitOps, List<string> Warnings);
 
@@ -241,20 +244,6 @@ static class Solver
         }
     }
 
-    // Reflection read of a numeric engine property (e.g. DeltaQ) — unit-op
-    // classes vary; a missing/non-finite value is null, never an error.
-    private static double? Num(object obj, string property)
-    {
-        try
-        {
-            var value = obj.GetType().GetProperty(property)?.GetValue(obj);
-            if (value is null) return null;
-            var d = Convert.ToDouble(value);
-            return double.IsFinite(d) ? d : null;
-        }
-        catch { return null; }
-    }
-
     public static SolveResult Run(Job job)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -300,30 +289,15 @@ static class Solver
                     break;
 
                 default:  // equipment-level results for downstream sizing (FR-015)
-                {
-                    var type = FriendlyType(obj);
-                    var deltaQ = Num(obj, "DeltaQ") ?? Num(obj, "Q");   // DWSIM SI: kW
-                    var isDriver = type is "compressor" or "pump" or "expander";
-                    unitOps.Add(new UnitOpRow(
-                        Name:    obj.GraphicObject.Tag,
-                        Type:    type,
-                        PowerKw: isDriver ? RoundN(deltaQ, 1) : null,
-                        DutyKw:  isDriver ? null : RoundN(deltaQ, 1),
-                        OutletTemperatureC: RoundN(Num(obj, "TOut") is double to ? to - 273.15 : null, 3),
-                        OutletPressureBar:  RoundN(Num(obj, "POut") is double po ? po * 1e-5 : null, 3)));
+                    // ONE harvest, shared with build-solve (Modes.HarvestUnitOp), for the same
+                    // reason the stream harvest above is shared: this was a byte-for-byte copy,
+                    // and 143's solver read-back would otherwise have appeared on one solve path
+                    // and not the other. 099 recorded the fork as debt; paying it is one line.
+                    unitOps.Add(Modes.HarvestUnitOp(obj));
                     break;
-                }
             }
         }
 
         return new SolveResult(converged, sw.ElapsedMilliseconds, streams, energy, unitOps, warnings);
-
-        static double? RoundN(double? v, int digits) =>
-            v is double d && double.IsFinite(d) ? Math.Round(d, digits) : null;
-
-        // Non-finite values (diverged/unsolved streams) become null — they are
-        // not representable in JSON and must never kill the worker.
-        static double? Round(double? si, double offset = 0, double scale = 1) =>
-            si is double v && double.IsFinite(v) ? Math.Round(v * scale + offset, 3) : null;
     }
 }

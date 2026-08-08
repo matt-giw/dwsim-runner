@@ -406,7 +406,11 @@ static class Modes
             si is double v && double.IsFinite(v) ? Math.Round(v * scale + offset, digits) : null;
     }
 
-    private static UnitOpRow HarvestUnitOp(ISimulationObject obj)
+    /// <summary>ONE unit-op harvest, shared with the `solve` entry point (Program.cs), which
+    /// used to carry a byte-for-byte copy — the duplication 099 recorded as debt, and the reason
+    /// a reported field could depend on which entry point ran (Hazard 7). Two callers, one
+    /// definition; 143 needed to add a field and fixing the fork was smaller than adding it twice.</summary>
+    internal static UnitOpRow HarvestUnitOp(ISimulationObject obj)
     {
         static double? Num(object o, string prop)
         {
@@ -418,6 +422,11 @@ static class Modes
             catch { return null; }
         }
         static double? RoundN(double? v, int d) => v is double x && double.IsFinite(x) ? Math.Round(x, d) : null;
+        static string? Str(object o, string prop)
+        {
+            try { return o.GetType().GetProperty(prop)?.GetValue(o) as string; }
+            catch { return null; }
+        }
 
         var type = FriendlyType(obj);
         var deltaQ = Num(obj, "DeltaQ") ?? Num(obj, "Q");
@@ -428,7 +437,13 @@ static class Modes
             PowerKw: isDriver ? RoundN(deltaQ, 1) : null,
             DutyKw: isDriver ? null : RoundN(deltaQ, 1),
             OutletTemperatureC: RoundN(Num(obj, "TOut") is double to ? to - 273.15 : null, 3),
-            OutletPressureBar: RoundN(Num(obj, "POut") is double po ? po * 1e-5 : null, 3));
+            OutletPressureBar: RoundN(Num(obj, "POut") is double po ? po * 1e-5 : null, 3),
+            // 143 FR-003 — READ BACK off the engine object, never echoed from the request. A
+            // setting that is accepted and ignored looks identical to one that took effect, and
+            // that ambiguity is exactly what 141 removed on the binder. Null for everything that
+            // is not a column, which is how the app can tell "no solver here" from "the default".
+            SolvingMethod: Str(obj, "SolvingMethodName"),
+            MaxIterations: Num(obj, "MaxIterations") is double mi ? (int)mi : null);
     }
 
     private static string FriendlyType(object obj) => obj switch
