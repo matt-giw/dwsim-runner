@@ -299,7 +299,7 @@ public static class FlowsheetBuilder
     /// <param name="compounds">The flowsheet's RESOLVED compound names — what the engine keys a
     /// per-compound specification by. Threaded rather than re-derived so a separator's spec cannot
     /// be validated against a different list than the one the engine holds.</param>
-    private static void ApplyParameter(ISimulationObject so, FlowObject o, UnitOpDef def, ParamDef p,
+    internal static void ApplyParameter(ISimulationObject so, FlowObject o, UnitOpDef def, ParamDef p,
         JsonElement raw, IReadOnlyCollection<string> compounds,
         Action<string, string?, string, string?> error)   // (code, tag, message, path)
     {
@@ -308,6 +308,12 @@ public static class FlowsheetBuilder
             ColumnConfigurator.Apply(so, p.Name, raw);
             return;
         }
+        // 099 US1 — `powerInput` was CONSUMED before this loop: ElectrolyzerConfigurator.Apply
+        // synthesizes the energy stream from it (the engine takes power as a stream, not a
+        // parameter). Already applied out of band, so the honest binder must not refuse it —
+        // caught by 141's T017 sweep when the refusal flipped the type's capability verdict.
+        if (def.Type is "waterElectrolyzer" && p.Name.Equals("powerInput", StringComparison.OrdinalIgnoreCase))
+            return;
         // 099 US2 — a per-compound dictionary, which the generic name→property setter cannot express.
         if (def.Type is "componentSeparator" && ComponentSeparatorConfigurator.Handles(p.Name))
         {
@@ -351,7 +357,8 @@ public static class FlowsheetBuilder
             {
                 var eta = raw.ValueKind == JsonValueKind.Object
                     ? raw.GetProperty("value").GetDouble() : raw.GetDouble();
-                SetEngineProperty(so, p.EngineProperties, eta <= 1.0 ? eta * 100 : eta);
+                if (!SetEngineProperty(so, p.EngineProperties, eta <= 1.0 ? eta * 100 : eta))
+                    RefuseUnbindable(o, def, p, error);   // 141 FR-001 — same rule on the early-return path
                 return;
             }
         }
@@ -453,38 +460,76 @@ public static class FlowsheetBuilder
 
         if (p.EngineProperties.Length > 0 && SetEngineProperty(so, p.EngineProperties, engineValue))
             return;
-        // Fall back to DWSIM's generic property interface.
-        so.SetPropertyValue(p.Name, engineValue);
+        // Fall back to DWSIM's generic property interface — but only when the object's own
+        // property bag actually lists the name. Its return value cannot be trusted (141 T009a,
+        // decompiled 9.0.5.0 + probed live): ShortcutColumn's SetPropertyValue override returns
+        // TRUE unconditionally, writing nothing for a name it does not recognise — which is how
+        // the shortcut column's whole parameter set was silently dropped for three weeks.
+        if (so.GetProperties(DWSIM.Interfaces.Enums.PropertyType.ALL)
+              .Contains(p.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            so.SetPropertyValue(p.Name, engineValue);
+            return;
+        }
+        RefuseUnbindable(o, def, p, error);
     }
 
-    private static bool SetEngineProperty(ISimulationObject so, string[] candidates, object? value)
+    // 141 FR-001: a parameter the runner cannot bind is a typed, per-parameter build failure —
+    // same envelope as MISSING_REQUIRED_PARAMETER (severity/code/tag/path/message), one step
+    // later in the pipeline. Never a silent skip.
+    private static void RefuseUnbindable(FlowObject o, UnitOpDef def, ParamDef p,
+        Action<string, string?, string, string?> error) =>
+        error("UNBINDABLE_PARAMETER", o.Tag,
+            $"'{def.Type}' parameter '{p.Name}' on '{o.Tag}' could not be applied: no settable " +
+            $"engine property or field matches [{string.Join(", ", p.EngineProperties)}], and the " +
+            $"engine's generic property interface does not list '{p.Name}'",
+            $"parameters.{p.Name}");
+
+    internal static bool SetEngineProperty(ISimulationObject so, string[] candidates, object? value)
     {
+        const System.Reflection.BindingFlags Flags =
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.IgnoreCase;
         foreach (var name in candidates)
         {
-            var prop = so.GetType().GetProperty(name,
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
-                | System.Reflection.BindingFlags.IgnoreCase);
-            if (prop is null) continue;
-            if (value is null) return true;   // probe-only call
-            if (!prop.CanWrite) continue;
-            var target = prop.PropertyType;
-            var converted = target.IsEnum ? Enum.Parse(target, value.ToString()!, ignoreCase: true)
-                : target == typeof(int) ? Convert.ToInt32(value)
-                // 099 US2 — `ComponentSeparator.SpecifiedStreamIndex` is a BYTE. JSON gives Int32, and
-                // without this the setter threw "Object of type 'System.Int32' cannot be converted to
-                // type 'System.Byte'" — a reflection message about a document the caller wrote.
-                : target == typeof(byte) ? Convert.ToByte(value)
-                : target == typeof(short) ? Convert.ToInt16(value)
-                : target == typeof(long) ? Convert.ToInt64(value)
-                : target == typeof(float) ? Convert.ToSingle(value)
-                : target == typeof(double) ? Convert.ToDouble(value)
-                : target == typeof(double?) ? (double?)Convert.ToDouble(value)
-                : value;
-            prop.SetValue(so, converted);
-            return true;
+            var prop = so.GetType().GetProperty(name, Flags);
+            if (prop is not null)
+            {
+                if (value is null) return true;   // probe-only call
+                if (prop.CanWrite)
+                {
+                    prop.SetValue(so, Coerce(prop.PropertyType, value));
+                    return true;
+                }
+            }
+            // 141 FR-003: DWSIM exposes several settable members as public FIELDS, not
+            // properties — ShortcutColumn.m_refluxratio, m_lightkey, m_condenserpressure, … —
+            // which GetProperty can never see. Measured: the shortcut column's five required
+            // parameters all live in fields, so every one of them silently missed.
+            var field = so.GetType().GetField(name, Flags);
+            if (field is not null && !field.IsInitOnly)
+            {
+                if (value is null) return true;   // probe-only call
+                field.SetValue(so, Coerce(field.FieldType, value));
+                return true;
+            }
         }
         return false;
     }
+
+    private static object Coerce(Type target, object value) =>
+        target.IsEnum ? Enum.Parse(target, value.ToString()!, ignoreCase: true)
+        : target == typeof(int) ? Convert.ToInt32(value)
+        // 099 US2 — `ComponentSeparator.SpecifiedStreamIndex` is a BYTE. JSON gives Int32, and
+        // without this the setter threw "Object of type 'System.Int32' cannot be converted to
+        // type 'System.Byte'" — a reflection message about a document the caller wrote.
+        : target == typeof(byte) ? Convert.ToByte(value)
+        : target == typeof(short) ? Convert.ToInt16(value)
+        : target == typeof(long) ? Convert.ToInt64(value)
+        : target == typeof(float) ? Convert.ToSingle(value)
+        : target == typeof(double) ? Convert.ToDouble(value)
+        : target == typeof(double?) ? (double?)Convert.ToDouble(value)
+        : value;
 
     private static void BuildReactions(IFlowsheet fs, FlowDoc doc,
         Dictionary<string, ISimulationObject> byTag, Action<string, string?, string, string?> error)

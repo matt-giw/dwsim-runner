@@ -35,8 +35,8 @@ public static class UnitOpCatalog
 {
     private static PortDef In(string name, int idx, bool required = true) => new(name, "in", "material", required, idx);
     private static PortDef Out(string name, int idx, bool required = true) => new(name, "out", "material", required, idx);
-    private static PortDef EnergyIn(string name, int idx) => new(name, "in", "energy", false, idx);
-    private static PortDef EnergyOut(string name, int idx) => new(name, "out", "energy", false, idx);
+    private static PortDef EnergyIn(string name, int idx, bool required = false) => new(name, "in", "energy", required, idx);
+    private static PortDef EnergyOut(string name, int idx, bool required = false) => new(name, "out", "energy", required, idx);
     private static ParamDef P(string name, string unitType, bool required, params string[] engineProps) =>
         new(name, unitType, required, engineProps);
 
@@ -219,9 +219,14 @@ public static class UnitOpCatalog
             [P("volume", "volume", false, "Volume"),
              P("length", "length", false, "Length")], true),
 
+        // 141 US5 (FR-010): both columns' energy ports are `required: true` because that is what
+        // the ENGINE enforces — without them BaseClass.Validate refuses with the opaque "Check
+        // the connections of the object" (045 row E, re-confirmed 2026-08-06). The catalog said
+        // `required: false` while every converging probe piped both; document validation now
+        // refuses with the port NAMED, before the engine is reached.
         new UnitOpDef("shortcutColumn", "Shortcut Column (FUG)", ObjectType.ShortcutColumn,
             [In("Feed", 0), Out("Distillate", 0), Out("Bottoms", 1),
-             EnergyOut("Condenser Duty", 2), EnergyIn("Reboiler Duty", 1)],
+             EnergyOut("Condenser Duty", 2, required: true), EnergyIn("Reboiler Duty", 1, required: true)],
             [P("refluxRatio", "dimensionless", true, "m_refluxratio", "RefluxRatio"),
              P("lightKey", "string", true, "m_lightkey", "LightKey"),
              P("heavyKey", "string", true, "m_heavykey", "HeavyKey"),
@@ -234,7 +239,7 @@ public static class UnitOpCatalog
         // ColumnConfigurator (dedicated engine methods) — indexes unused.
         new UnitOpDef("distillationColumn", "Distillation Column (rigorous)", ObjectType.DistillationColumn,
             [In("Feed", 0), Out("Distillate", 0), Out("Bottoms", 1),
-             EnergyOut("Condenser Duty", 0), EnergyIn("Reboiler Duty", 10)],
+             EnergyOut("Condenser Duty", 0, required: true), EnergyIn("Reboiler Duty", 10, required: true)],
             [P("numberOfStages", "integer", true),
              P("feedStage", "integer", true),
              P("refluxRatio", "dimensionless", true),                  // condenser spec ("Reflux Ratio")

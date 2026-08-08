@@ -18,6 +18,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="DwsimRunner.Worker.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="DWSIM.Automation">
       <HintPath>$(DwsimPath)/DWSIM.Automation.dll</HintPath>
       <Private>false</Private>
