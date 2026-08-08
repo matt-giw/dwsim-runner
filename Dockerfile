@@ -23,8 +23,15 @@ RUN dotnet publish src/DwsimRunner.Api    -c Release -o /out/api && \
 
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
+# coinor-libipopt1v5: DWSIM's own release ships /opt/dwsim/libIpopt39.so as a
+# SYMLINK to /usr/lib/libipopt.so.1 and expects the distro to provide the target.
+# Without it the symlink dangles and any solve reaching the nonlinear solver kills
+# the worker outright — `DllNotFoundException: Unable to load shared library
+# 'Ipopt39'`, exit 134, no result. Measured 2026-08-08 on the eval corpus: 13 of
+# 18 NRTL cases died on this; the same documents converge under PR and SRK, so it
+# reads as a property-package limitation rather than a missing runtime dependency.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libfontconfig1 libgdiplus libc6-dev curl \
+        libfontconfig1 libgdiplus libc6-dev curl coinor-libipopt1v5 \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root: the API + spawned worker processes never need root. DWSIM writes
