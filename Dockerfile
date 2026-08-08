@@ -23,6 +23,13 @@ RUN dotnet publish src/DwsimRunner.Api    -c Release -o /out/api && \
 
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
+# 147 US2 (FR-006) — the commit this image was built from, surfaced at /health so a consumer can
+# tell two builds apart. `dwsimVersion` is the DWSIM library and cannot: the engine deployed on
+# 2026-07-30 and the one pinned on 2026-08-08 report identical health while disagreeing about
+# which flash types they accept. Railway passes this with `--build-arg BUILD_REF=$RAILWAY_GIT_COMMIT_SHA`;
+# unset stays the literal "unknown", which is a REPORTABLE state, not an absent field.
+ARG BUILD_REF=unknown
+ENV BUILD_REF=${BUILD_REF}
 # coinor-libipopt1v5: DWSIM's own release ships /opt/dwsim/libIpopt39.so as a
 # SYMLINK to /usr/lib/libipopt.so.1 and expects the distro to provide the target.
 # Without it the symlink dangles and any solve reaching the nonlinear solver kills

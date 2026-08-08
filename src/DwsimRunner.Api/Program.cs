@@ -20,6 +20,13 @@ var app = builder.Build();
 string Cfg(string key, string fallback) =>
     app.Configuration[key] is { Length: > 0 } v ? v : fallback;
 
+// 147 US2 (FR-006) — WHICH BUILD this engine is, baked at image build time from a Docker ARG.
+// `dwsimVersion` below is the DWSIM LIBRARY version and cannot tell two runner builds apart:
+// measured 2026-08-08, the engine iskra deployed on 2026-07-30 and the one it pins today return
+// identical /health while disagreeing about which flash types they accept.
+// Unset is an EXPLICIT "unknown", never an absent field — an absent field and a stale one look
+// the same to a consumer, and "unknown drift" must not read as "no drift".
+string buildRef       = Cfg("BUILD_REF", "unknown");
 string dwsimPath      = Cfg("DWSIM_PATH", "/opt/dwsim");
 string templatesPath  = Path.GetFullPath(Cfg("TEMPLATES_PATH", "/templates"));
 string workerDll      = Cfg("WORKER_PATH", "/app/worker/DwsimRunner.Worker.dll");
@@ -109,6 +116,7 @@ app.MapGet("/health", () =>
         dwsimPath,
         dwsimFound = found,
         dwsimVersion = version,
+        buildRef,
         supportedRange = SupportedRange,
         versionSupported = supported,
         templatesPath,

@@ -36,6 +36,43 @@ public class HealthContractTests
             h.GetProperty("templates").EnumerateArray().Select(t => t.GetString()));
     }
 
+    // 147 US2 (T022, FR-006) — a running engine must say WHICH BUILD it is.
+    //
+    // `dwsimVersion` is the DWSIM LIBRARY version. Measured 2026-08-08: the engine deployed to
+    // iskra's development environment (df13a91, built 2026-07-30) and the one the repository
+    // pins today (8e53e1f) return byte-identical /health payloads while DISAGREEING about which
+    // flash types they accept. A consumer could not tell them apart, so a vocabulary mismatch
+    // could not name which side was behind.
+    [Fact]
+    public async Task Health_reports_a_build_identity_distinct_from_the_library_version()
+    {
+        var dwsimDir = MakeFixtureDwsimDir();
+        using var host = new RunnerHost(new()
+        {
+            ["DWSIM_PATH"] = dwsimDir,
+            ["BUILD_REF"] = "abc1234",
+        });
+
+        var h = await host.Client.GetFromJsonAsync<JsonElement>("/health");
+
+        Assert.Equal("abc1234", h.GetProperty("buildRef").GetString());
+        Assert.NotEqual(h.GetProperty("dwsimVersion").GetString(), h.GetProperty("buildRef").GetString());
+    }
+
+    // Unset must be an EXPLICIT "unknown", never an absent field. An absent field and a stale one
+    // are indistinguishable to a consumer; an explicit "unknown" is not, and it is the difference
+    // between "drift of unknown size" and "no drift" — 055's unset-is-not-a-gate, applied to a
+    // version handshake.
+    [Fact]
+    public async Task Health_reports_buildRef_unknown_when_the_image_was_built_without_it()
+    {
+        using var host = new RunnerHost(new() { ["DWSIM_PATH"] = MakeFixtureDwsimDir() });
+
+        var h = await host.Client.GetFromJsonAsync<JsonElement>("/health");
+
+        Assert.Equal("unknown", h.GetProperty("buildRef").GetString());
+    }
+
     [Fact]
     public async Task Health_not_ready_reports_ok_false_with_actionable_hint()
     {
