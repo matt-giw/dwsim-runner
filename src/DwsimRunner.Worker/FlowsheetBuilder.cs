@@ -275,7 +275,7 @@ public static class FlowsheetBuilder
                 }
             }
             if (o.Type == "distillationColumn")
-                try { ColumnConfigurator.Finish(so); }
+                try { ColumnConfigurator.Finish(so, o); }
                 catch (Exception ex) { Error("INVALID_PARAMETER_VALUE", o.Tag, $"column pressure profile on '{o.Tag}': {ex.Message}"); }
         }
 

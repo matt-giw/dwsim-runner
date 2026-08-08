@@ -13,6 +13,8 @@
 //   bottomsMolarFlow    → SetReboilerSpec("Product Molar Flow Rate", …)
 //   condenserPressure   → Stages[0].P   (bar/kPa/… converted to Pa)
 //   reboilerPressure    → Stages[^1].P; middle stages interpolated linearly in Finish()
+//   solvingMethod       → Column.SolvingMethodName (spec 143)
+//   maxIterations       → Column.MaxIterations     (spec 143)
 
 using System.Text.Json;
 using DWSIM.Interfaces;
@@ -55,7 +57,32 @@ internal static class ColumnConfigurator
 
     public static bool Handles(string paramName) => paramName is
         "numberOfStages" or "feedStage" or "refluxRatio" or "distillateMolarFlow"
-        or "bottomsMolarFlow" or "condenserPressure" or "reboilerPressure";
+        or "bottomsMolarFlow" or "condenserPressure" or "reboilerPressure"
+        or "solvingMethod" or "maxIterations";
+
+    // ── 143: the solver was never selected ────────────────────────────────
+    // DWSIM 9.0.5.0 ships FOUR column solvers and `Column.Calculate` picks between them by
+    // SUBSTRING of `SolvingMethodName` — "Modified" first, then "Bubble", "Napthali", "Rates";
+    // anything else is looked up in an external-solver dictionary and, failing that, throws
+    // `Unable to find column solver with name '{0}'` from inside Calculate. The constructor
+    // default is "Wang-Henke (Bubble Point)", the bubble-point method — the classic wrong
+    // choice at high reflux and strong non-ideality, and the one every observed failure stack
+    // came from. The runner set none of this, so every column in the platform ran the default.
+    //
+    // The document vocabulary is OURS and closed, mapped here to the engine's strings, for
+    // two reasons that are really one: DWSIM's own spelling is a typo ("Napthali"), and an
+    // unrecognised name fails deep inside the solve rather than at the binder. A closed map
+    // makes an unknown method a typed build refusal listing what IS available — 141 FR-001.
+    private static readonly Dictionary<string, string> Methods = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["wangHenke"] = "Wang-Henke (Bubble Point)",
+        ["modifiedWangHenke"] = "Modified Wang-Henke (Bubble Point)",
+        ["naphtaliSandholm"] = "Napthali-Sandholm (Simultaneous Correction)",
+        ["burninghamOtto"] = "Burningham-Otto (Sum Rates)",
+    };
+
+    /// <summary>The document-facing solver names, for error text and for the catalog.</summary>
+    public static IReadOnlyCollection<string> MethodNames => Methods.Keys;
 
     public static void Apply(ISimulationObject column, string paramName, JsonElement raw)
     {
@@ -84,16 +111,60 @@ internal static class ColumnConfigurator
             case "reboilerPressure":
                 col.Stages[^1].P = ToPa(raw);
                 return;
+            case "solvingMethod":
+            {
+                var name = AsString(raw);
+                if (!Methods.TryGetValue(name, out var engineName))
+                    throw new InvalidOperationException(
+                        $"solvingMethod '{name}' is not a solver this engine has; available: {string.Join(", ", Methods.Keys)}");
+                col.SolvingMethodName = engineName;
+                return;
+            }
+            case "maxIterations":
+            {
+                var n = AsInt(raw);
+                if (n < 1) throw new InvalidOperationException($"maxIterations is {n}; it must be at least 1");
+                col.MaxIterations = n;
+                return;
+            }
             default:
                 throw new InvalidOperationException($"ColumnConfigurator has no handler for '{paramName}'");
         }
     }
 
-    /// <summary>Post-parameter pass: linear stage-pressure profile between the
-    /// condenser and reboiler pressures.</summary>
-    public static void Finish(ISimulationObject column)
+    // 143 FR-006 — the runner's iteration budget, replacing DWSIM's constructor default of 100.
+    //
+    // MEASURED, on 36 documents (3 systems × 4 stage counts × 3 reflux ratios,
+    // `specs/143-column-solver-selection/results.md`): 100 solves 18 of them, 300 solves 25,
+    // 1000 solves 28 — and every one of those 28 converges inside the deployed 60 s
+    // `SOLVE_TIMEOUT_SECONDS`, the slowest at 18.9 s. No document that converged at 100 fails at
+    // 1000; the converged set is a strict superset, which is what FR-006 requires.
+    //
+    // The cost is that a column which will NOT converge now spends up to 10× longer proving it,
+    // and past 60 s that is a timeout rather than the engine's "maximum number of iterations"
+    // message. Bounded by the timeout either way, and the app now reports a column timeout as a
+    // non-convergence rather than throwing — so the diagnosis survives the trade.
+    //
+    // NOT a method change: Naphtali-Sandholm solves 26 and is better on nine documents, but it
+    // loses methanol/water at 30 stages / reflux 3.0, which Wang-Henke converges in 5.6 s and NS
+    // does not finish in 300. One regression is one too many (FR-006). It is one `solvingMethod`
+    // away for anyone who wants it.
+    private const int DefaultMaxIterations = 1000;
+
+    /// <summary>Post-parameter pass: the linear stage-pressure profile between the condenser and
+    /// reboiler pressures, and the runner's iteration budget when the document did not state one.</summary>
+    public static void Finish(ISimulationObject column, FlowObject unitDoc)
     {
-        if (column is not DistillationColumn col || col.Stages.Count < 3) return;
+        if (column is not DistillationColumn col) return;
+
+        // Applied here rather than at construction so an explicit `maxIterations` always wins —
+        // the document is the authority, and a default that overwrote it would be the silent
+        // no-op class this repo keeps finding (023/038).
+        var stated = unitDoc.Parameters is { } prms
+            && prms.Keys.Any(k => string.Equals(k, "maxIterations", StringComparison.OrdinalIgnoreCase));
+        if (!stated) col.MaxIterations = DefaultMaxIterations;
+
+        if (col.Stages.Count < 3) return;
         var top = col.Stages[0].P;
         var bottom = col.Stages[^1].P;
         if (top <= 0 || bottom <= 0) return;
@@ -127,6 +198,9 @@ internal static class ColumnConfigurator
         return Math.Clamp(stage - 1, 0, Math.Max(col.NumberOfStages - 1, 0));
     }
 
+    private static string AsString(JsonElement e) =>
+        (e.ValueKind == JsonValueKind.Object ? e.GetProperty("value").GetString() : e.GetString())
+        ?? throw new InvalidOperationException("expected a string value");
     private static int AsInt(JsonElement e) =>
         e.ValueKind == JsonValueKind.Object ? e.GetProperty("value").GetInt32() : e.GetInt32();
     private static double AsDouble(JsonElement e) =>

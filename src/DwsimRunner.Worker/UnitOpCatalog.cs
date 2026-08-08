@@ -246,7 +246,12 @@ public static class UnitOpCatalog
              P("condenserPressure", "pressure", true),
              P("reboilerPressure", "pressure", true),
              P("distillateMolarFlow", "molarFlow", false),             // condenser spec alternative
-             P("bottomsMolarFlow", "molarFlow", false)], false),       // reboiler spec ("Product Molar Flow Rate")
+             P("bottomsMolarFlow", "molarFlow", false),                // reboiler spec ("Product Molar Flow Rate")
+             // 143 — engine configuration, not engineering data. Both are deliberately
+             // unbound by any app-side datasheet attribute (143 FR-008): a solving method is a
+             // property of the simulator, not a fact about a column. See ColumnConfigurator.
+             P("solvingMethod", "string", false),
+             P("maxIterations", "integer", false)], false),
 
         new UnitOpDef("recycle", "Recycle", ObjectType.OT_Recycle,
             [In("Inlet", 0), Out("Outlet", 0)],
