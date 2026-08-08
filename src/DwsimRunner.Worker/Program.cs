@@ -14,6 +14,11 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DwsimRunner.Worker;
 
+// MUST run before any native library can print to fd 1. Console.SetOut below
+// only moves the MANAGED writer; Ipopt writes its banner to the descriptor and
+// corrupted the protocol for every solve that loaded it. See ProtocolChannel.
+ProtocolChannel.Divert();
+
 DwsimResolver.Install();   // MUST run before any DWSIM-typed code is JIT'd
 
 var job = JsonSerializer.Deserialize<Job>(
@@ -73,7 +78,7 @@ finally
     Console.SetOut(realOut);
 }
 
-Console.WriteLine(JsonSerializer.Serialize(payload, payload.GetType(), new JsonSerializerOptions
+ProtocolChannel.WriteResult(JsonSerializer.Serialize(payload, payload.GetType(), new JsonSerializerOptions
 {
     PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
