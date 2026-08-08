@@ -126,7 +126,10 @@ public class ColumnTests
         var column = r.GetProperty("unitOps").EnumerateArray()
             .Single(u => u.GetProperty("type").GetString() == "distillationColumn");
         Assert.Contains("Napthali", column.GetProperty("solvingMethod").GetString());
-        Assert.Equal(100, column.GetProperty("maxIterations").GetInt32());   // the engine default, untouched
+        // The RUNNER's measured budget (143 FR-006), not DWSIM's constructor default of 100 —
+        // this document states no `maxIterations`, so `Finish()` supplies it. This assertion was
+        // written against 100 and caught the default landing, which is the read-back doing its job.
+        Assert.Equal(1000, column.GetProperty("maxIterations").GetInt32());
     }
 
     [SkippableFact]
@@ -140,7 +143,12 @@ public class ColumnTests
         // DWSIM's own failure for an unrecognised name is a bare Exception thrown from INSIDE
         // Calculate, which would surface as a non-convergence. 141 FR-001's rule is that a
         // setting the runner cannot bind is a typed refusal — so the vocabulary is closed here.
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        //
+        // 422, not 400: the API returns UnprocessableEntity for every BUILD_FAILED, because the
+        // request was well-formed and the ENGINE rejected what it described. Asserted against the
+        // established code rather than the one that felt right — this expectation was written as
+        // 400 and was simply wrong about the API it was testing.
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
         var body = await resp.Content.ReadAsStringAsync();
         Assert.Contains("INVALID_PARAMETER_VALUE", body);
         Assert.Contains("naphtaliSandholm", body);   // the refusal names what IS available
