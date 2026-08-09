@@ -490,7 +490,7 @@ static class Modes
         var sum = flash.Composition.Fractions.Values.Sum();
         if (Math.Abs(sum - 1.0) > 1e-4)
             throw new WorkerInputException("FLASH_INVALID", $"composition fractions sum to {sum:G6}; must be 1 (±1e-4)");
-        if (flash.FlashType is null) throw new WorkerInputException("FLASH_INVALID", "flashType is required (TP|PH|PS)");
+        if (flash.FlashType is null) throw new WorkerInputException("FLASH_INVALID", "flashType is required (TP|PH|PS|PVF|TVF)");
         var pp = (flash.PropertyPackage ?? "").Trim();
         if (pp.Length == 0) throw new WorkerInputException("FLASH_INVALID", "propertyPackage is required");
 
