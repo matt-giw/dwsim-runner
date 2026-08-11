@@ -593,7 +593,32 @@ static class Modes
                 throw new WorkerInputException("FLASH_INVALID", $"flashType '{flash.FlashType}' not supported (TP|PH|PS|PVF|TVF)");
         }
 
-        var result = package.CalculateEquilibrium2(calcType, spec1, spec2, 1.0);
+        // The 4th argument is the initial TEMPERATURE estimate (Tref), verbatim: CalculateEquilibrium2
+        // forwards it into Flash_PH(Vz, P, H, Tref, ...) / Flash_PS(...), read from the IL of the
+        // vendored DWSIM.Thermodynamics.dll (spec 162, 2026-08-11). Flash_PH_1 opens with
+        // `If Tref = 0 Then Tref = 298.15` — zero means "no estimate, use the engine default".
+        // This used to pass 1.0, which DEFEATS that default: a legal-looking 1-kelvin start, from
+        // which every PH/PS flash on a mixture (≥2 nonzero fractions) died in the inner Flash_PT
+        // ("T = 0.00 K"). Pure compounds took a different branch and survived, which is why four
+        // specs' pure-compound probes never saw it. Pass 0.0; never invent a temperature here.
+        IFlashCalculationResult result;
+        try
+        {
+            result = package.CalculateEquilibrium2(calcType, spec1, spec2, 0.0);
+        }
+        catch (Exception ex)
+        {
+            // CalculateEquilibrium2 THROWS on non-convergence (AggregateException wrapping the
+            // flash algorithm's own message); ResultException below covers only errors the engine
+            // RETURNS. Without this catch the worker process died (exit 1) and the caller got
+            // "WORKER_CRASH — simulation worker failed unexpectedly": a message with no
+            // information, retried by the co-pilot 37 times in the 2026-08-11 corpus. The engine's
+            // own sentence ("PT Flash: Error calculating amount of the vapor phase...") is the
+            // legible refusal; surface it.
+            var inner = ex is AggregateException agg ? agg.InnerException ?? ex : ex;
+            throw new WorkerInputException("FLASH_INVALID",
+                $"flash calculation failed: {inner.Message}");
+        }
         if (result?.ResultException is not null)
             throw new WorkerInputException("FLASH_INVALID",
                 $"flash calculation failed: {result.ResultException.Message}");
