@@ -137,6 +137,16 @@ public static class FlowsheetBuilder
                     Error("BUILD_FAILED", o.Tag, $"unknown object kind/type '{o.Kind}/{o.Type}'");
                     continue;
                 }
+
+                // 166: DWSIM's Vessel defaults to CalculationModes.Legacy, whose mixed-feed flash is
+                // (T, P) — ill-posed for a pure compound on the saturation line, where (T, P) does not
+                // determine the vapor fraction. Every two-phase pure feed collapsed to one outlet
+                // (0 kg/h on the other) with a phantom duty equal to the destroyed phase's latent heat,
+                // under converged:true on EOS packages. Adiabatic mode copies a single feed's state
+                // verbatim (VF preserved by construction) and PH-flashes a multi-feed mix — correct in
+                // both cases. Measured: specs/166-separator-degenerate-split/research.md.
+                if (created is DWSIM.UnitOperations.UnitOperations.Vessel vessel)
+                    vessel.CalculationMode = DWSIM.UnitOperations.UnitOperations.Vessel.CalculationModes.Adiabatic;
                 // AN EXTERNAL UNIT OPERATION BUILDS ITS OWN PORTS, AND NOTHING CALLS IT.
                 //
                 // `IExternalUnitOperation.CreateConnectors()` is the engine's own hook, and for a
