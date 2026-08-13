@@ -210,6 +210,15 @@ static class Modes
     private static string SafeString(object obj, string prop) =>
         obj.GetType().GetProperty(prop)?.GetValue(obj) as string ?? "";
 
+    // 168: engine error strings arrive with embedded newlines and stack-trace tails;
+    // one warning is one line, capped so a pathological message cannot flood the report.
+    private static string Squash(string msg)
+    {
+        var line = string.Join(" ", msg.Split('\n', '\r')
+            .Select(l => l.Trim()).Where(l => l.Length > 0));
+        return line.Length > 300 ? line[..300] + "…" : line;
+    }
+
     // ── validate (T022) ─────────────────────────────────────────────────────
     // Document → FlowsheetBuilder.Build (skip solve) → engine issues. Collects
     // every issue the engine raises before any abort; semantic validation per
@@ -256,7 +265,33 @@ static class Modes
         bool converged = fs.Solved;
         var engineWarnings = new List<string>();
         if (!converged && !string.IsNullOrEmpty(fs.ErrorMessage))
-            engineWarnings.Add(fs.ErrorMessage);
+            engineWarnings.Add(Squash(fs.ErrorMessage));
+
+        // 168: five corpus non-convergences (159/179/215/216/217) were hard zeros
+        // reading "solve did not converge" and nothing else. The flowsheet-level
+        // ErrorMessage above turned out to be populated all along — the HARNESS was
+        // dropping it (its reader never touched the 200 body's warnings; fixed on the
+        // evals side the same day). What it lacks is attribution, so this harvest
+        // adds the PER-OBJECT half: BaseClass.ErrorMessage carries the throw's own
+        // sentence on the unit that died, and GraphicObject.Calculated names every
+        // unit stranded behind it. 162's move (the engine's own words), one level
+        // down. Measured payoff, all five cases: "R101: The Element Matrix is not
+        // defined", "RC-101: Recycle reached the maximum number of iterations",
+        // "Seawater-Feed: Salt compound not found", plus the stranded-unit trail.
+        if (!converged)
+        {
+            foreach (var obj in fs.SimulationObjects.Values)
+            {
+                string tag = obj.GraphicObject?.Tag ?? "?";
+                string msg = (obj as DWSIM.SharedClasses.UnitOperations.BaseClass)?.ErrorMessage ?? "";
+                if (!string.IsNullOrWhiteSpace(msg))
+                    engineWarnings.Add($"{tag}: {Squash(msg)}");
+                else if (obj.GraphicObject is { Calculated: false }
+                         && obj is not DWSIM.Thermodynamics.Streams.MaterialStream
+                         && obj is not DWSIM.UnitOperations.Streams.EnergyStream)
+                    engineWarnings.Add($"{tag}: did not calculate (no engine message)");
+            }
+        }
 
         // ── harvest streams/energy/unitOps (reusing the spec-001 shape) ───────
         var streams = new List<StreamRow>();
