@@ -260,6 +260,44 @@ public static class FlowsheetBuilder
         // carries power as a parameter and the engine gets a stream.
         ElectrolyzerConfigurator.Apply(fs, doc, byTag, Error);
 
+        // 169: a Gibbs reactor minimizes over an ELEMENT MATRIX the GUI's editor
+        // populates and the automation path never does — `Calculate_GibbsMin` opens
+        // with `Elements.Length - 1 < 0 -> throw "The Element Matrix is not defined."`,
+        // which is exactly what both corpus Gibbs cases (159/217) died on once 168 made
+        // non-convergence legible. The engine ships its own setup, `CreateElementMatrix()`
+        // (public; reads the ATTACHED INLET, so this must run after connections) — but it
+        // enumerates `ComponentIDs`, and the only engine routine touching that list
+        // (`CheckCompoundIDs`) REMOVES stale entries and never adds: on a fresh automation
+        // reactor the list is empty and CreateElementMatrix faithfully builds a 0x0 matrix
+        // (measured: calling it alone left both cases dying on the same message). The GUI
+        // seeds the list from the user's compound picks; here every flowsheet compound
+        // participates. Fourth instance of the shape: a GUI-populated default the headless
+        // path must set itself (162 Tref, 166 Vessel.CalculationMode, this twice over).
+        foreach (var so in byTag.Values)
+        {
+            if (so is not DWSIM.UnitOperations.Reactors.Reactor_Gibbs gr) continue;
+            try
+            {
+                gr.ComponentIDs.Clear();
+                foreach (var compoundName in fs.SelectedCompounds.Keys)
+                    gr.ComponentIDs.Add(compoundName);
+                gr.CreateElementMatrix();
+                // Second GUI-only default, found one layer under the first: with
+                // InitializeFromPreviousSolution true (and no previous solution to read),
+                // Calculate_GibbsMin throws "invalid initial estimates." — the false path
+                // computes estimates from the feed, which is the only sane choice on a
+                // freshly built flowsheet.
+                gr.InitializeFromPreviousSolution = false;
+            }
+            catch (Exception ex)
+            {
+                // An unfed inlet dereferences in CreateElementMatrix before the solver
+                // would refuse it anyway — report, don't die at build.
+                Error("BUILD_FAILED", gr.GraphicObject?.Tag ?? "?",
+                    $"cannot create Gibbs element matrix: {ex.Message}");
+            }
+        }
+
         // ── unit-op parameters ─────────────────────────────────────────────
         foreach (var o in doc.Objects.Where(o => o.Kind == "unitOp" && o.Parameters is { Count: > 0 }))
         {
