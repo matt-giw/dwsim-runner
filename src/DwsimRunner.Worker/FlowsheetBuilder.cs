@@ -147,6 +147,27 @@ public static class FlowsheetBuilder
                 // both cases. Measured: specs/166-separator-degenerate-split/research.md.
                 if (created is DWSIM.UnitOperations.UnitOperations.Vessel vessel)
                     vessel.CalculationMode = DWSIM.UnitOperations.UnitOperations.Vessel.CalculationModes.Adiabatic;
+
+                // 170: the Recycle block ships MaximumIterations = 50 (m_MaxIterations,
+                // vendored IL) — 143's iteration-budget shape on the tear stream: corpus
+                // 179 (HDA gas recycle) died on "Recycle reached the maximum number of
+                // iterations without converging" (168's diagnosis), and two more recycle
+                // cases (130 at 1.94%, 167 at 0.17%) "converged" inside the block's own
+                // loose defaults while leaving real mass unclosed (VazaoMassica 0.01,
+                // Composicao 0.001, Temperatura 0.1 K). Same standard as 143: raise the
+                // budget 10x — the solve timeout is the real backstop — and tighten the
+                // tear tolerances one decade so "converged" means closed to ~0.1%.
+                if (created is DWSIM.UnitOperations.SpecialOps.Recycle recycle)
+                {
+                    recycle.MaximumIterations = 500;
+                    // One decade was not enough for 130 (1.94% -> 0.18% against a 0.1%
+                    // conservation gate — the tear stream is a fraction of the total, so
+                    // its tolerance must sit well under the gate). Two decades, measured.
+                    recycle.ConvergenceParameters.VazaoMassica = 0.0001;  // mass flow
+                    recycle.ConvergenceParameters.Composicao = 0.00001;   // composition
+                    recycle.ConvergenceParameters.Temperatura = 0.01;     // K
+                    recycle.ConvergenceParameters.Entalpia = 0.1;         // enthalpy
+                }
                 // AN EXTERNAL UNIT OPERATION BUILDS ITS OWN PORTS, AND NOTHING CALLS IT.
                 //
                 // `IExternalUnitOperation.CreateConnectors()` is the engine's own hook, and for a
