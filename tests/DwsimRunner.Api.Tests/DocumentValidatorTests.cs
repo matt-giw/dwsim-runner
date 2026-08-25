@@ -171,7 +171,7 @@ public class DocumentValidatorTests
     [Fact]
     public void Document_too_large_is_rejected()
     {
-        var objects = string.Join(",", Enumerable.Range(0, 101)
+        var objects = string.Join(",", Enumerable.Range(0, 501)
             .Select(i => $$"""{ "tag": "S{{i}}", "kind": "materialStream" }"""));
         var issues = Validate($$"""{ "schemaVersion": 1, "compounds": ["Methane"], "propertyPackage": "PR", "objects": [{{objects}}], "connections": [] }""");
         Assert.Contains(issues, i => i.Code == "DOCUMENT_TOO_LARGE");

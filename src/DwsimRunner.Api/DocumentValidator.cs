@@ -56,7 +56,7 @@ public sealed class CatalogModel
 
 public static class DocumentValidator
 {
-    public const int MaxObjects = 100;
+    public const int MaxObjects = 500;
     public const int MaxDocumentBytes = 200 * 1024;
     private const int SupportedSchemaVersion = 1;
 
