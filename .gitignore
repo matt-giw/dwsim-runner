@@ -14,3 +14,7 @@ publish/
 # User-authored templates persisted by /flowsheets/build-solve (runtime data,
 # never committed; curated reference templates live in templates/)
 user-templates/
+
+# Local DWSIM install, copied out of the runner image for the SDK-container test loop
+# (docker cp dwsim-runner-...:/opt/dwsim ./local-dwsim). Never committed — Constitution IV.
+local-dwsim/

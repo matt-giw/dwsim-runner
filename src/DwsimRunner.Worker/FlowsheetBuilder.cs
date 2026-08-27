@@ -324,8 +324,52 @@ public static class FlowsheetBuilder
         {
             if (!byTag.TryGetValue(o.Tag, out var so)) continue;
             var def = UnitOpCatalog.Types[o.Type!];
+
+            // 199 — the calculation mode is resolved and WRITTEN FIRST, before any parameter.
+            //
+            // FR-002 is an ordering requirement, and this loop iterates a Dictionary: the mode
+            // cannot simply be another entry in it, because the engine reads the parameters that
+            // the mode in force at write time selects. Resolving here is also what lets the filter
+            // below exist at all.
+            var (mode, modeExplicit) = ResolveCalcMode(so, o, def, Error, Warn);
+
             foreach (var (name, raw) in o.Parameters!)
             {
+                // 199 — `calcMode` is consumed above, not by the generic setter. It is declared in
+                // the catalog so it crosses the wire and appears in the parameter list the app and
+                // the capture read; it is not a property the binder can write, because which
+                // PROPERTY holds it differs per unit op (four names) and its value is an enum
+                // member, not a quantity.
+                if (string.Equals(name, "calcMode", StringComparison.OrdinalIgnoreCase)) continue;
+
+                // 199 FR-003 — a parameter the active mode does not read is NOT SENT. This one line
+                // is what makes the ignored-input bug structurally impossible: before it, five
+                // parameters were accepted, echoed, converged and ignored, because the engine reads
+                // only what its mode selects and nothing ever chose the mode.
+                if (mode is not null && def.CalcMode is { } cmd && !cmd.Reads(mode, name))
+                {
+                    var readers = cmd.ModesReading(name);
+                    var alternatives = readers.Length > 0
+                        ? $"Modes that read it: {string.Join(", ", readers)}."
+                        : "No mode on this unit op reads it.";
+                    if (modeExplicit)
+                        // FR-003a — an EXPLICIT mode plus a parameter it cannot read is a
+                        // contradiction the caller stated, and there is no reading of the request
+                        // the runner can honour. The heatExchanger precedent: refusing beats
+                        // picking one silently.
+                        Error("PARAMETER_NOT_READ_BY_MODE", o.Tag,
+                            $"'{o.Tag}' is in calculation mode '{mode}', which does not read '{name}'. " +
+                            $"{alternatives} Remove the parameter or change the mode.");
+                    else
+                        // The mode was INFERRED, so the contradiction is the system's, not the
+                        // caller's. Refusing here would fail documents that converge today — which
+                        // is precisely the back-compat risk D2 names — so it drops and says so.
+                        Warn("PARAMETER_NOT_READ_BY_MODE", o.Tag,
+                            $"'{o.Tag}' has no explicit calculation mode; '{mode}' was inferred. " +
+                            $"'{name}' is not read in that mode and was dropped. {alternatives}");
+                    continue;
+                }
+
                 var paramDef = def.Parameters.FirstOrDefault(p =>
                     string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
                 if (paramDef is null)
@@ -368,6 +412,77 @@ public static class FlowsheetBuilder
     /// <param name="compounds">The flowsheet's RESOLVED compound names — what the engine keys a
     /// per-compound specification by. Threaded rather than re-derived so a separator's spec cannot
     /// be validated against a different list than the one the engine holds.</param>
+    /// <summary>
+    /// 199 — which calculation mode this unit op runs, and whether the caller said so.
+    /// </summary>
+    /// <remarks>
+    /// An EXPLICIT `calcMode` always wins. With none, the declared inference rules run in order and
+    /// the first whose parameter is present takes it — which is the pre-199 behaviour, so a document
+    /// saved before this feature solves unchanged (FR-004). With neither, nothing is written and the
+    /// unit op keeps whatever the engine (or the creation path) already set.
+    ///
+    /// The inference rules used to be seven hand-written hatches: six inside `ApplyParameter` and one
+    /// on `Vessel` at creation, which is why searching this method alone found six and missed the
+    /// seventh. They are declarations on `CalcModeDef` now — the rule and its exceptions in one
+    /// place, and readable by the catalog endpoint so the app can show what will happen.
+    ///
+    /// Returns the WIRE mode name, never the engine member: everything downstream keys on the
+    /// normalized name, and the engine member is a per-unit-op detail that must not leak.
+    /// </remarks>
+    private static (string? Mode, bool Explicit) ResolveCalcMode(
+        ISimulationObject so, FlowObject o, UnitOpDef def,
+        Action<string, string?, string, string?> error, Action<string, string?, string> warn)
+    {
+        if (def.CalcMode is not { } cm) return (null, false);
+
+        string? wire = null;
+        var isExplicit = false;
+        if (o.Parameters is not null &&
+            o.Parameters.FirstOrDefault(kv => string.Equals(kv.Key, "calcMode", StringComparison.OrdinalIgnoreCase))
+                is { Key: not null } entry &&
+            entry.Value.ValueKind == JsonValueKind.String)
+        {
+            wire = entry.Value.GetString();
+            isExplicit = true;
+            if (!cm.TryResolve(wire!, out _))
+            {
+                // Name the alternatives, not just the failure. Spec 138 measured that the model
+                // guesses names the system already holds; an error that lists them is an
+                // instruction rather than a dead end.
+                error("UNKNOWN_CALC_MODE", o.Tag,
+                    $"'{o.Tag}' has no calculation mode '{wire}'. Known modes for '{def.Type}': " +
+                    string.Join(", ", cm.Modes().Select(m => m.Name)) + ".", null);
+                return (null, false);
+            }
+        }
+        else
+        {
+            foreach (var (param, inferred) in cm.Infer)
+                if (o.Parameters is not null &&
+                    o.Parameters.Keys.Any(k => string.Equals(k, param, StringComparison.OrdinalIgnoreCase)))
+                {
+                    wire = inferred;
+                    break;
+                }
+        }
+
+        if (wire is null) return (null, false);
+        if (!cm.TryResolve(wire, out var member)) return (null, false);
+
+        var prop = so.GetType().GetProperty(cm.ClrProperty);
+        if (prop is null)
+        {
+            // The catalog claims a property this DWSIM build does not have. Loud, because it means
+            // the declaration and the engine have diverged — the exact drift this spec removes.
+            error("BUILD_FAILED", o.Tag,
+                $"'{def.Type}' declares calculation-mode property '{cm.ClrProperty}', " +
+                "which this engine build does not expose.", null);
+            return (null, false);
+        }
+        prop.SetValue(so, Enum.Parse(prop.PropertyType, member!));
+        return (wire, isExplicit);
+    }
+
     internal static void ApplyParameter(ISimulationObject so, FlowObject o, UnitOpDef def, ParamDef p,
         JsonElement raw, IReadOnlyCollection<string> compounds,
         Action<string, string?, string, string?> error)   // (code, tag, message, path)
@@ -389,37 +504,13 @@ public static class FlowsheetBuilder
             ComponentSeparatorConfigurator.Apply(so, raw, o, compounds, error);
             return;
         }
-        // Reactors: an explicit outletTemperature implies OutletTemperature
-        // operating mode — otherwise the engine ignores the setpoint and runs
-        // adiabatic (its default).
-        if (def.Type.StartsWith("reactor", StringComparison.Ordinal) && p.Name == "outletTemperature")
-        {
-            var modeProp = so.GetType().GetProperty("ReactorOperationMode");
-            if (modeProp is not null)
-                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletTemperature"));
-        }
-        // Heaters/coolers: same class of bug as the reactor block above — an
-        // explicit outletTemperature implies OutletTemperature calc mode;
-        // otherwise the engine stays in heat-duty mode (its default,
-        // HeatAdded/HeatRemoved) and silently ignores the setpoint.
-        // Spec: 005-unitop-parameter-application.
+        // 199 — the reactor and heater/cooler MODE hatches that used to live here are gone. They
+        // are declared `Infer` rules on `CalcModeDef` now and run in `ResolveCalcMode`, BEFORE any
+        // parameter is written, which is what FR-002 requires and what this location could never
+        // provide: a hatch fires when its own parameter happens to be reached in dictionary order.
+        // What remains below is NOT a mode hatch — it is a unit conversion, and it stays.
         if (def.Type is "heater" or "cooler")
         {
-            if (p.Name == "outletTemperature")
-            {
-                var modeProp = so.GetType().GetProperty("CalcMode");
-                if (modeProp is not null)
-                    modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletTemperature"));
-            }
-            // 099 US5 — same shape, same reason: a setpoint the engine will ignore unless its mode
-            // says to read it. Only the COOLER declares `OutletVaporFraction`; the catalog reflects
-            // that, so this branch is unreachable on a heater.
-            if (p.Name == "outletVaporFraction")
-            {
-                var modeProp = so.GetType().GetProperty("CalcMode");
-                if (modeProp is not null)
-                    modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "OutletVaporFraction"));
-            }
             // Engine efficiency (m_eta) is a percent (constructor default 100);
             // the document convention is a 0–1 fraction. ≤ 1 → fraction, ×100.
             if (p.Name == "efficiency")
@@ -465,10 +556,11 @@ public static class FlowsheetBuilder
                     "hotSideOutletTemperature and coldSideOutletTemperature are both set, which " +
                     "specifies the duty twice — keep one and let the exchanger compute the other, " +
                     "or drop both and size it with overallHeatTransferCoefficient + area");
-            var modeProp = so.GetType().GetProperty("CalculationMode");
-            if (modeProp is not null)
-                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType,
-                    hot ? "CalcTempColdOut" : "CalcTempHotOut"));
+            // 199 — the mode SELECTION moved to `ResolveCalcMode`'s declared Infer rules. The
+            // refusal above did not, and must not: "both outlet temperatures are set" is an
+            // over-specification of the DUTY, true in every mode, and not something a mode map can
+            // express. It is also the precedent FR-003a generalizes.
+            _ = hot;
         }
         // 099 US5 — a stated Kv implies a Kv calculation mode. The valve's default is `DeltaP` or
         // `OutletPressure`, under which `Kv` is read by nothing: accepted, converged, ignored.
@@ -477,22 +569,16 @@ public static class FlowsheetBuilder
         // does not require the caller to have already decided the phase — and the phase is the
         // engine's answer, not the engineer's input. 099's tasks named `kvLiquid`/`kvGas` as
         // PARAMETERS; they are MODES, the same confusion as the splitter's `StreamMassFlowSpec`.
-        if (def.Type is "valve" && p.Name == "kv")
-        {
-            var modeProp = so.GetType().GetProperty("CalcMode") ?? so.GetType().GetProperty("CalculationMode");
-            if (modeProp is not null && modeProp.PropertyType.IsEnum)
-                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "Kv_General"));
-        }
+        // 199 — declared as `("kv", "kvGeneral")` on the valve's CalcModeDef. Exposing the mode is
+        // also what finally makes Kv_Liquid/Gas/Steam reachable: the hatch could only ever pick the
+        // one mode it named.
         // 099 US5 — a stated outlet flow implies the splitter's flow-spec mode. Its default is
         // `SplitRatios`, under which `StreamFlowSpec` is read by nothing: the setpoint is accepted,
         // the flowsheet converges, and the split is whatever the ratios say. The same silent-ignore
         // this escape-hatch region exists for.
-        if (def.Type is "splitter" && p.Name == "outletMassFlow")
-        {
-            var modeProp = so.GetType().GetProperty("OperationMode") ?? so.GetType().GetProperty("OpMode");
-            if (modeProp is not null && modeProp.PropertyType.IsEnum)
-                modeProp.SetValue(so, Enum.Parse(modeProp.PropertyType, "StreamMassFlowSpec"));
-        }
+        // 199 — declared as `("outletMassFlow", "streamMassFlowSpec")`. `streamMoleFlowSpec` is
+        // reachable for the first time: the engine reads the same setpoint as a MOLE flow in that
+        // mode, and no hatch could select it.
         if (def.Type is "splitter" && p.Name == "splitRatio1")
         {
             var r1 = raw.ValueKind == JsonValueKind.Object ? raw.GetProperty("value").GetDouble() : raw.GetDouble();
