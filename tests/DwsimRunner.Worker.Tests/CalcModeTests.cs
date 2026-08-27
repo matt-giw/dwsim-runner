@@ -144,3 +144,48 @@ public class CalcModeTests
             Assert.True(def.TryResolve(def.Default, out _), $"{wire}: default '{def.Default}' is not one of its modes");
     }
 }
+
+/// <summary>
+/// Spec 200 T007/T018 — a temperature DELTA is not a temperature.
+///
+/// `ApplyParameter` converts a numeric parameter with `Converter.ConvertToSI(unit, value)`, keyed on
+/// the CALLER'S unit string rather than the declared `UnitType` (which only gates the `integer`
+/// case). `ConvertToSI("C", 10)` returns 283.15.
+///
+/// So a `temperatureChange` of 10 °C, bound the obvious way, reaches the engine as a 283.15 K change:
+/// accepted, converged, wrong, and stamped DWSIM on the way back. That is spec 036's `overallUA`
+/// shape — a 1000x converging error whose full account `UnitOpCatalog` still carries — and it is why
+/// a delta gets its own unit type rather than reusing `temperature`.
+///
+/// A delta's units are MAGNITUDES: a 10 K change and a 10 °C change are the same change. °F and
+/// Rankine differ by 5/9, unambiguously. Nothing here needs an offset, and applying one is the bug.
+/// </summary>
+public class TemperatureDeltaTests
+{
+    [Theory]
+    [InlineData("K", 10.0, 10.0)]
+    [InlineData("C", 10.0, 10.0)]      // the case that returns 283.15 through ConvertToSI
+    [InlineData("degC", 10.0, 10.0)]
+    [InlineData("F", 18.0, 10.0)]      // 18 °F of change IS 10 K of change
+    [InlineData("R", 18.0, 10.0)]
+    public void A_delta_converts_as_a_magnitude_never_with_an_offset(string unit, double given, double expectedK)
+    {
+        Assert.Equal(expectedK, UnitOpCatalog.ConvertDelta(unit, given), 6);
+    }
+
+    [Fact]
+    public void The_offset_path_is_what_this_exists_to_avoid()
+    {
+        // Pinned so the reason survives the fix: this is what the ordinary path does with the same
+        // input, and why reusing `temperature` for a delta would be a silent 273x error.
+        Assert.Equal(283.15, DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI("C", 10.0), 6);
+    }
+
+    [Fact]
+    public void An_unknown_delta_unit_is_refused_rather_than_guessed()
+    {
+        // A unit nobody declared a factor for must not fall through to 1.0 — that is how a bar/Pa
+        // confusion ships. Loud beats plausible.
+        Assert.Throws<InvalidOperationException>(() => UnitOpCatalog.ConvertDelta("bar", 10.0));
+    }
+}

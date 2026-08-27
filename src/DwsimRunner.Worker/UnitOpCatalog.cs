@@ -138,32 +138,46 @@ public static class UnitOpCatalog
         Default: "deltaP", Always: ["efficiency"],
         Consumes: new() {
             ["deltaP"] = ["pressureIncrease"], ["outletPressure"] = ["outletPressure"],
-            ["energyStream"] = [], ["curves"] = [], ["power"] = [],
+            ["power"] = ["power"],
+            ["energyStream"] = [], ["curves"] = [],
         },
         // Pre-199 a pump had NO hatch at all, which is why `outletPressure` measured inert: the
         // catalog declared it, the engine constructed in Delta_P, and the value was accepted and
         // ignored. Inferring it is new behaviour and it is the FIX, not a regression — a document
         // that sets only `outletPressure` currently gets a silently wrong answer.
-        Infer: [("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")]);
+        Infer: [("power", "power"), ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")]);
 
     private static readonly CalcModeDef CompressorModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Compressor.CalculationMode),
         Default: "outletPressure", Always: ["adiabaticEfficiency"],
         Consumes: new() {
             ["outletPressure"] = ["outletPressure"], ["deltaP"] = ["pressureIncrease"],
-            ["energyStream"] = [], ["powerRequired"] = [], ["head"] = [], ["curves"] = [],
-            ["pressureRatio"] = [],
+            // 200 US1 — three modes that were selectable and read nothing now have their setpoint.
+            ["powerRequired"] = ["powerRequired"], ["head"] = ["head"],
+            ["pressureRatio"] = ["pressureRatio"],
+            // Still empty, and for two different reasons: `energyStream` needs a CONNECTED energy
+            // stream (topology, spec 162 — not a parameter this spec can add), and `curves` is D2.
+            ["energyStream"] = [], ["curves"] = [],
         },
-        Infer: [("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")]);
+        // 200 — a setpoint with no Infer rule selects NO mode, so the engine stays in its
+        // constructed default and ignores it. Measured: all three read `inert` until these landed,
+        // which is 199's own bug one level down — the parameter existed and nothing chose the mode
+        // that reads it. Ordered most-specific first; the first rule whose parameter is present wins.
+        Infer: [("pressureRatio", "pressureRatio"), ("head", "head"),
+                ("powerRequired", "powerRequired"),
+                ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")]);
 
     private static readonly CalcModeDef ExpanderModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Expander.CalculationMode),
         Default: "outletPressure", Always: ["adiabaticEfficiency"],
         Consumes: new() {
             ["outletPressure"] = ["outletPressure"], ["deltaP"] = ["pressureDecrease"],
-            ["powerGenerated"] = [], ["head"] = [], ["curves"] = [], ["pressureRatio"] = [],
+            ["powerGenerated"] = ["powerGenerated"], ["head"] = ["head"],
+            ["pressureRatio"] = ["pressureRatio"], ["curves"] = [],
         },
-        Infer: [("pressureDecrease", "deltaP"), ("outletPressure", "outletPressure")]);
+        Infer: [("pressureRatio", "pressureRatio"), ("head", "head"),
+                ("powerGenerated", "powerGenerated"),
+                ("pressureDecrease", "deltaP"), ("outletPressure", "outletPressure")]);
 
     private static readonly CalcModeDef ValveModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Valve.CalculationMode),
@@ -190,10 +204,14 @@ public static class UnitOpCatalog
         Default: "heatAdded", Always: ["pressureDrop", "efficiency"],
         Consumes: new() {
             ["heatAdded"] = ["heatDuty"], ["outletTemperature"] = ["outletTemperature"],
-            ["energyStream"] = [], ["outletVaporFraction"] = [], ["temperatureChange"] = [],
+            ["temperatureChange"] = ["temperatureChange"],
+            // `outletVaporFraction` is on the heater's ENUM and the property is not on the class —
+            // unreachable by construction, so there is nothing to consume. The COOLER has both.
+            ["outletVaporFraction"] = [], ["energyStream"] = [],
             ["heatAddedRemoved"] = ["heatDuty"],
         },
-        Infer: [("outletTemperature", "outletTemperature"), ("heatDuty", "heatAdded")]);
+        Infer: [("outletTemperature", "outletTemperature"), ("temperatureChange", "temperatureChange"),
+                ("heatDuty", "heatAdded")]);
 
     private static readonly CalcModeDef CoolerModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Cooler.CalculationMode),
@@ -204,12 +222,12 @@ public static class UnitOpCatalog
             // already reflects that asymmetry (FlowsheetBuilder's own comment says so), and the
             // map must not invent a parameter to make the two look alike.
             ["outletVaporFraction"] = ["outletVaporFraction"],
-            ["temperatureChange"] = [], ["energyStream"] = [],
+            ["temperatureChange"] = ["temperatureChange"], ["energyStream"] = [],
         },
         // `outletVaporFraction` was the sixth hatch and only the COOLER declares the parameter,
         // so only the cooler carries the rule.
         Infer: [("outletTemperature", "outletTemperature"), ("outletVaporFraction", "outletVaporFraction"),
-                ("heatDuty", "heatRemoved")]);
+                ("temperatureChange", "temperatureChange"), ("heatDuty", "heatRemoved")]);
 
     // 166 — the runner forces Adiabatic at creation because DWSIM constructs in Legacy, whose
     // mixed-feed (T,P) flash is ill-posed for a pure compound on the saturation line. So iskra's
@@ -285,10 +303,16 @@ public static class UnitOpCatalog
             ["calcArea"] = ["coldSideOutletTemperature", "hotSideOutletTemperature"],
             ["shellandTubeRating"] = ["overallHeatTransferCoefficient", "area"],
             ["shellandTubeCalcFoulingFactor"] = ["overallHeatTransferCoefficient", "area"],
-            ["pinchPoint"] = [], ["thermalEfficiency"] = [],
-            ["outletVaporFraction1"] = [], ["outletVaporFraction2"] = [],
+            ["thermalEfficiency"] = ["thermalEfficiency"],
+            ["outletVaporFraction1"] = ["outletVaporFraction1"],
+            ["outletVaporFraction2"] = ["outletVaporFraction2"],
+            // A bool GATE rather than a setpoint — US2's mechanism, not a parameter.
+            ["pinchPoint"] = [],
         },
-        Infer: [("coldSideOutletTemperature", "calcTempHotOut"), ("hotSideOutletTemperature", "calcTempColdOut")]);
+        Infer: [("thermalEfficiency", "thermalEfficiency"),
+                ("outletVaporFraction1", "outletVaporFraction1"),
+                ("outletVaporFraction2", "outletVaporFraction2"),
+                ("coldSideOutletTemperature", "calcTempHotOut"), ("hotSideOutletTemperature", "calcTempColdOut")]);
 
     public static readonly Dictionary<string, UnitOpDef> Types = new[]
     {
@@ -318,6 +342,9 @@ public static class UnitOpCatalog
         new UnitOpDef("heater", "Heater", ObjectType.Heater,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             // A temperature DIFFERENCE, not a temperature. `temperatureDelta` converts as a
+             // magnitude; reusing "temperature" would send a 10 degC change as 283.15 K.
+             P("temperatureChange", "temperatureDelta", false, "TemperatureChange"),
              P("outletTemperature", "temperature", false, "OutletTemperature"),
              P("heatDuty", "power", false, "DeltaQ"),
              P("pressureDrop", "pressure", false, "DeltaP"),
@@ -326,6 +353,7 @@ public static class UnitOpCatalog
         new UnitOpDef("cooler", "Cooler", ObjectType.Cooler,
             [In("Inlet", 0), Out("Outlet", 0), EnergyOut("Energy Outlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             P("temperatureChange", "temperatureDelta", false, "TemperatureChange"),
              P("outletTemperature", "temperature", false, "OutletTemperature"),
              P("heatDuty", "power", false, "DeltaQ"),
              P("pressureDrop", "pressure", false, "DeltaP"),
@@ -353,6 +381,9 @@ public static class UnitOpCatalog
             //   - `overallUA: {2500, "W/K"}` — the honest unit — was REFUSED as an unknown power
             //     unit. The parameter was only reachable by declining to say what you meant.
             [P("calcMode", "string", false, "__calcMode"),
+             P("outletVaporFraction1", "dimensionless", false, "OutletVaporFraction1"),
+             P("outletVaporFraction2", "dimensionless", false, "OutletVaporFraction2"),
+             P("thermalEfficiency", "dimensionless", false, "ThermalEfficiency"),
              P("coldSideOutletTemperature", "temperature", false, "ColdSideOutletTemperature"),
              P("hotSideOutletTemperature", "temperature", false, "HotSideOutletTemperature"),
              P("overallHeatTransferCoefficient", "heatTransferCoefficient", false, "OverallCoefficient"),
@@ -413,6 +444,8 @@ public static class UnitOpCatalog
         new UnitOpDef("pump", "Pump", ObjectType.Pump,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             // D1 — `power` binds to `HeatDuty`; the pump has no `DeltaQ`. Probe decides (T004).
+             P("power", "power", false, "HeatDuty"),
              P("outletPressure", "pressure", false, "Pout", "POut"),
              P("pressureIncrease", "pressure", false, "DeltaP"),
              P("efficiency", "dimensionless", false, "Eficiencia", "Efficiency")], false, CalcMode: PumpModes),
@@ -420,6 +453,16 @@ public static class UnitOpCatalog
         new UnitOpDef("compressor", "Compressor", ObjectType.Compressor,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             // 200 US1 — the setpoints behind modes 199 made selectable and could not drive.
+             // Units from `reference/dwsim_unitop_reference.csv`: PolytropicHead is METRES (head as
+             // a length, not a pressure) — guessing that is spec 036's overallUA mistake.
+             P("pressureRatio", "dimensionless", false, "PressureRatio"),
+             // 200 — BOTH names, adiabatic first. `PolytropicHead` alone measured INERT on both classes,
+             // and the class declares an `AdiabaticHead` too; the catalog's own efficiency here is
+             // `AdiabaticEfficiency`, so the adiabatic pair is the one this unit op is described in.
+             // SetEngineProperty tries these in order, so a build where only one exists still binds.
+             P("head", "length", false, "AdiabaticHead", "PolytropicHead"),
+             P("powerRequired", "power", false, "DeltaQ"),
              P("outletPressure", "pressure", false, "POut", "Pout"),
              P("pressureIncrease", "pressure", false, "DeltaP"),
              P("adiabaticEfficiency", "dimensionless", false, "AdiabaticEfficiency", "EficienciaAdiabatica")], false, CalcMode: CompressorModes),
@@ -427,6 +470,13 @@ public static class UnitOpCatalog
         new UnitOpDef("expander", "Expander (Turbine)", ObjectType.Expander,
             [In("Inlet", 0), Out("Outlet", 0), EnergyOut("Energy Outlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             P("pressureRatio", "dimensionless", false, "PressureRatio"),
+             // 200 — BOTH names, adiabatic first. `PolytropicHead` alone measured INERT on both classes,
+             // and the class declares an `AdiabaticHead` too; the catalog's own efficiency here is
+             // `AdiabaticEfficiency`, so the adiabatic pair is the one this unit op is described in.
+             // SetEngineProperty tries these in order, so a build where only one exists still binds.
+             P("head", "length", false, "AdiabaticHead", "PolytropicHead"),
+             P("powerGenerated", "power", false, "DeltaQ"),
              P("outletPressure", "pressure", false, "POut", "Pout"),
              P("pressureDecrease", "pressure", false, "DeltaP"),
              P("adiabaticEfficiency", "dimensionless", false, "AdiabaticEfficiency", "EficienciaAdiabatica")], false, CalcMode: ExpanderModes),
@@ -547,6 +597,32 @@ public static class UnitOpCatalog
         var head = char.ToLowerInvariant(parts[0][0]) + parts[0][1..];
         return head + string.Concat(parts.Skip(1).Select(p => char.ToUpperInvariant(p[0]) + p[1..]));
     }
+
+    /// <summary>
+    /// 200 — convert a temperature DIFFERENCE to kelvin. A delta is a magnitude, never a point.
+    ///
+    /// `Converter.ConvertToSI("C", 10)` returns **283.15**, which is right for an outlet temperature
+    /// and catastrophic for a temperature CHANGE. `ApplyParameter` keys that conversion on the
+    /// caller's unit string, so a `temperatureChange` declared as `unitType: "temperature"` would
+    /// take a 10 °C change to the engine as a 283.15 K change — accepted, converged, wrong, and
+    /// wearing DWSIM provenance on the way back. Spec 036's `overallUA` is the same shape and its
+    /// account is a few hundred lines up.
+    ///
+    /// A 10 K change IS a 10 °C change: the scales differ by an offset the difference cancels. °F and
+    /// Rankine differ by a factor of 5/9, also unambiguously.
+    ///
+    /// An unrecognised unit THROWS rather than passing the number through. Falling back to 1.0 is how
+    /// a bar/Pa confusion ships silently, and this whole spec exists because of values the engine
+    /// accepted and nobody questioned.
+    /// </summary>
+    public static double ConvertDelta(string unit, double value) => unit switch
+    {
+        "K" or "degK" or "C" or "degC" => value,
+        "F" or "degF" or "R" or "degR" => value * 5.0 / 9.0,
+        _ => throw new InvalidOperationException(
+            $"'{unit}' is not a temperature-difference unit. Use K/degC (a difference is the same in " +
+            "both) or F/R. A difference has no offset, so an absolute temperature unit cannot express one."),
+    };
 
     public static object ToPayload() => Types.Values
         .OrderBy(d => d.Type, StringComparer.Ordinal)

@@ -603,6 +603,12 @@ public static class FlowsheetBuilder
             ? je.ValueKind switch
             {
                 JsonValueKind.Number when p.UnitType == "integer" => je.GetInt32(),
+                // 200 — a temperature DIFFERENCE converts as a magnitude. `ConvertToSI("C", 10)` is
+                // 283.15, which is correct for a point and a 273x error for a change. The unit type
+                // is what tells the two apart, and this is the one place it can.
+                JsonValueKind.Number when p.UnitType == "temperatureDelta" => unit is { Length: > 0 }
+                    ? UnitOpCatalog.ConvertDelta(unit, je.GetDouble())
+                    : je.GetDouble(),
                 JsonValueKind.Number => unit is { Length: > 0 }
                     ? DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI(unit, je.GetDouble())
                     : je.GetDouble(),
