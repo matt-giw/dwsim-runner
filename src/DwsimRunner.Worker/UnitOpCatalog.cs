@@ -15,7 +15,25 @@ using DWSIM.Interfaces.Enums.GraphicObjects;
 namespace DwsimRunner.Worker;
 
 public sealed record PortDef(string Name, string Direction, string Accepts, bool Required, int Index);
-public sealed record ParamDef(string Name, string UnitType, bool Required, string[] EngineProperties);
+/// <param name="Gate">
+/// 200 FR-002 — a property that must be set BEFORE this value, or the engine will not read it.
+///
+/// DWSIM has values whose meaning is selected by a second property, and there is no way to write
+/// that down as a quantity. `Valve.OpeningPct` is the measured case: 199 proved it stays inert with
+/// a Kv calculation mode explicitly selected, because the valve also needs
+/// `DefinedOpeningKvRelationShipType` to say HOW an opening maps to a Kv. Same shape on
+/// `Reactor_PFR` (`UseUserDefinedPressureDrop` + `UserDefinedPressureDrop`), `HeatExchanger`
+/// (`PinchPointAtOutlets`) and `Cooler` (`UseTemperatureEstimates`).
+///
+/// This is structurally what `CalcModeDef` does for calculation modes, one level down: *the engine
+/// reads a value only when something else selects it.* Declared on the PARAMETER rather than on the
+/// mode, because the gate belongs to the value — the PFR's pressure-drop switch applies whatever
+/// mode the reactor runs in.
+/// </param>
+public sealed record GateDef(string Property, object Value);
+
+public sealed record ParamDef(string Name, string UnitType, bool Required, string[] EngineProperties,
+    GateDef[]? Gates = null);
 /// <param name="ExternalId">
 /// Set ONLY for an EXTERNAL unit operation, and it is the engine's registry key ("Water
 /// Electrolyzer"), not the wire type.
@@ -79,19 +97,60 @@ public sealed record UnitOpDef(string Type, string DisplayName, ObjectType Objec
 /// rule whose parameter is present wins. These are the seven pre-199 hatches, moved out of
 /// <c>FlowsheetBuilder</c> so that one file no longer holds both the rule and its exception.
 /// </param>
+/// <param name="Aliases">
+/// 200 US5 — enum members that are a SECOND NAME for a mode already in the list, mapped to the
+/// survivor. Offering both makes an engineer choose between identical outcomes.
+///
+/// Confirmed BEHAVIOURALLY and only with corroboration. `scripts/detect-mode-aliases.ts` solves a
+/// unit op under each pair of its modes at two input settings and compares envelopes; it reports
+/// four identical pairs and **three of them are artifacts of the probe baseline**, not aliases:
+/// `orificePlate` homogeneous/slip are two-phase correlations against a single-phase feed,
+/// `splitter` splitRatios/streamMassFlowSpec both send everything to the only piped outlet (its own
+/// probe comment says so), and `valve` kvGas/kvGeneral coincide on a GAS feed by construction.
+///
+/// Only `heater.heatAddedRemoved` is collapsed, and it has three independent sources: the harness,
+/// the IL (ordinals 0 and 5 jump to the same `Calculate` branch), and DWSIM's own GUI, which shows
+/// one item labelled "Heat Added/Removed" where the enum has two members.
+///
+/// **A false collapse deletes a real mode from the menu**, so identical-on-one-baseline is not
+/// enough. If a later run wants to collapse more, it needs a baseline that CAN discriminate, and
+/// showing that is harder than the measurement it enables.
+/// </param>
 public sealed record CalcModeDef(
     string ClrProperty,
     Type EnumType,
     string Default,
     string[] Always,
     Dictionary<string, string[]> Consumes,
-    (string Param, string Mode)[] Infer)
+    (string Param, string Mode)[] Infer,
+    Dictionary<string, string>? Aliases = null,
+    Dictionary<string, string>? Undrivable = null)
 {
-    /// <summary>Every mode the engine declares, in ordinal order, with its wire name.</summary>
+    /// <summary>Every mode the engine declares, in ordinal order, MINUS the aliases (200 US5).
+    /// The collapsed names are still resolvable — see <see cref="AliasOf"/> — so a document that
+    /// carries one gets an error naming its survivor rather than a silent nothing.</summary>
     public IEnumerable<(string Name, string EngineMember, int Ordinal)> Modes() =>
         Enum.GetValues(EnumType).Cast<object>()
             .Select(v => (UnitOpCatalog.NormalizeMode(v.ToString()!), v.ToString()!, (int)v))
+            .Where(t => Aliases is null || !Aliases.ContainsKey(t.Item1))
             .OrderBy(t => t.Item3);
+
+    /// <summary>If this wire name was collapsed, the mode it collapsed INTO. Null otherwise.</summary>
+    public string? AliasOf(string wireName) =>
+        Aliases is not null && Aliases.TryGetValue(wireName, out var survivor) ? survivor : null;
+
+    /// <summary>
+    /// 200 US3 (FR-003) — why this mode cannot be driven, or null if it can.
+    ///
+    /// Declared as the EXCEPTIONS: a mode is drivable unless something says otherwise, so adding a
+    /// setpoint makes its mode work without anyone remembering to flip a second flag.
+    ///
+    /// A mode with no setpoint is NOT undrivable by that fact alone. A reactor running adiabatic and
+    /// a separator flashing isothermically are operating REGIMES, where selecting the mode IS the
+    /// whole specification — which is why the reactors and the separator declare nothing here.
+    /// </summary>
+    public string? UndrivableBecause(string wireName) =>
+        Undrivable is not null && Undrivable.TryGetValue(wireName, out var why) ? why : null;
 
     /// <summary>Wire name → engine member, WITHIN this unit op. Never across.</summary>
     public bool TryResolve(string wireName, out string? engineMember)
@@ -121,6 +180,14 @@ public static class UnitOpCatalog
     private static ParamDef P(string name, string unitType, bool required, params string[] engineProps) =>
         new(name, unitType, required, engineProps);
 
+    /// <summary>A parameter the engine reads only once `gateProperty` is set to `gateValue`.</summary>
+    /// <summary>A parameter the engine reads only once every gate is set. MORE THAN ONE is the
+    /// common case, not the exception: the valve's opening needs both a switch that turns the
+    /// opening/Kv relationship ON and a type that says WHICH relationship.</summary>
+    private static ParamDef PGated(string name, string unitType, GateDef[] gates,
+        params string[] engineProps) =>
+        new(name, unitType, false, engineProps, gates);
+
     // ── 199: calculation modes ──────────────────────────────────────────────────────────────────
     // The VALUES are never written here — they are reflected off the engine enum (FR-001). What is
     // declared is which parameters each mode reads, which is a fact about the engine that no
@@ -138,32 +205,49 @@ public static class UnitOpCatalog
         Default: "deltaP", Always: ["efficiency"],
         Consumes: new() {
             ["deltaP"] = ["pressureIncrease"], ["outletPressure"] = ["outletPressure"],
-            ["energyStream"] = [], ["curves"] = [], ["power"] = [],
+            ["power"] = ["power"],
+            ["energyStream"] = [], ["curves"] = [],
         },
         // Pre-199 a pump had NO hatch at all, which is why `outletPressure` measured inert: the
         // catalog declared it, the engine constructed in Delta_P, and the value was accepted and
         // ignored. Inferring it is new behaviour and it is the FIX, not a regression — a document
         // that sets only `outletPressure` currently gets a silently wrong answer.
-        Infer: [("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")]);
+        Infer: [("power", "power"), ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")],
+        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode", ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
 
     private static readonly CalcModeDef CompressorModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Compressor.CalculationMode),
         Default: "outletPressure", Always: ["adiabaticEfficiency"],
         Consumes: new() {
             ["outletPressure"] = ["outletPressure"], ["deltaP"] = ["pressureIncrease"],
-            ["energyStream"] = [], ["powerRequired"] = [], ["head"] = [], ["curves"] = [],
-            ["pressureRatio"] = [],
+            // 200 US1 — three modes that were selectable and read nothing now have their setpoint.
+            ["powerRequired"] = ["powerRequired"], ["head"] = ["head"],
+            ["pressureRatio"] = ["pressureRatio"],
+            // Still empty, and for two different reasons: `energyStream` needs a CONNECTED energy
+            // stream (topology, spec 162 — not a parameter this spec can add), and `curves` is D2.
+            ["energyStream"] = [], ["curves"] = [],
         },
-        Infer: [("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")]);
+        // 200 — a setpoint with no Infer rule selects NO mode, so the engine stays in its
+        // constructed default and ignores it. Measured: all three read `inert` until these landed,
+        // which is 199's own bug one level down — the parameter existed and nothing chose the mode
+        // that reads it. Ordered most-specific first; the first rule whose parameter is present wins.
+        Infer: [("pressureRatio", "pressureRatio"), ("head", "head"),
+                ("powerRequired", "powerRequired"),
+                ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")],
+        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode", ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
 
     private static readonly CalcModeDef ExpanderModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Expander.CalculationMode),
         Default: "outletPressure", Always: ["adiabaticEfficiency"],
         Consumes: new() {
             ["outletPressure"] = ["outletPressure"], ["deltaP"] = ["pressureDecrease"],
-            ["powerGenerated"] = [], ["head"] = [], ["curves"] = [], ["pressureRatio"] = [],
+            ["powerGenerated"] = ["powerGenerated"], ["head"] = ["head"],
+            ["pressureRatio"] = ["pressureRatio"], ["curves"] = [],
         },
-        Infer: [("pressureDecrease", "deltaP"), ("outletPressure", "outletPressure")]);
+        Infer: [("pressureRatio", "pressureRatio"), ("head", "head"),
+                ("powerGenerated", "powerGenerated"),
+                ("pressureDecrease", "deltaP"), ("outletPressure", "outletPressure")],
+        Undrivable: new() { ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
 
     private static readonly CalcModeDef ValveModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Valve.CalculationMode),
@@ -181,7 +265,12 @@ public static class UnitOpCatalog
             ["kvLiquid"] = ["kv", "openingPct"], ["kvGas"] = ["kv", "openingPct"],
             ["kvSteam"] = ["kv", "openingPct"], ["kvGeneral"] = ["kv", "openingPct"],
         },
-        Infer: [("kv", "kvGeneral"), ("pressureDrop", "deltaP"), ("outletPressure", "outletPressure")]);
+        // 200 R11 — `openingPct` needs its own rule for the same reason every other setpoint did:
+        // stating an opening with no rule selects no mode, and an unselected mode reads nothing.
+        // It infers a Kv mode because an opening only means anything through an opening/Kv
+        // relationship — which is also why it carries two gates.
+        Infer: [("openingPct", "kvGeneral"), ("kv", "kvGeneral"),
+                ("pressureDrop", "deltaP"), ("outletPressure", "outletPressure")]);
 
     // Thermal. Note the ordinals differ between the two (research R1): EnergyStream is 2 on Heater
     // and 4 on Cooler; OutletVaporFraction is 3 vs 2. Two declarations, never one shared table.
@@ -190,10 +279,21 @@ public static class UnitOpCatalog
         Default: "heatAdded", Always: ["pressureDrop", "efficiency"],
         Consumes: new() {
             ["heatAdded"] = ["heatDuty"], ["outletTemperature"] = ["outletTemperature"],
-            ["energyStream"] = [], ["outletVaporFraction"] = [], ["temperatureChange"] = [],
+            ["temperatureChange"] = ["temperatureChange"],
+            // `outletVaporFraction` is on the heater's ENUM and the property is not on the class —
+            // unreachable by construction, so there is nothing to consume. The COOLER has both.
+            ["outletVaporFraction"] = [], ["energyStream"] = [],
             ["heatAddedRemoved"] = ["heatDuty"],
         },
-        Infer: [("outletTemperature", "outletTemperature"), ("heatDuty", "heatAdded")]);
+        Infer: [("outletTemperature", "outletTemperature"), ("temperatureChange", "temperatureChange"),
+                ("heatDuty", "heatAdded")],
+        // The one confirmed alias. Ordinal 5 jumps to ordinal 0's `Calculate` branch, the behavioural
+        // harness measures them identical at two settings, and DWSIM's GUI shows a single item
+        // labelled "Heat Added/Removed" where the enum has two members. A heater offers 5, not 6.
+        Aliases: new() { ["heatAddedRemoved"] = "heatAdded" },
+        // Two causes, two sentences. `outletVaporFraction` is on the HEATER's enum and the property
+        // is on the COOLER's class only — the catalog has recorded that asymmetry since 099.
+        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode", ["outletVaporFraction"] = "this unit op has no such input — the mode is on the engine's enum and the property is not on the class" });
 
     private static readonly CalcModeDef CoolerModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Cooler.CalculationMode),
@@ -204,12 +304,13 @@ public static class UnitOpCatalog
             // already reflects that asymmetry (FlowsheetBuilder's own comment says so), and the
             // map must not invent a parameter to make the two look alike.
             ["outletVaporFraction"] = ["outletVaporFraction"],
-            ["temperatureChange"] = [], ["energyStream"] = [],
+            ["temperatureChange"] = ["temperatureChange"], ["energyStream"] = [],
         },
         // `outletVaporFraction` was the sixth hatch and only the COOLER declares the parameter,
         // so only the cooler carries the rule.
         Infer: [("outletTemperature", "outletTemperature"), ("outletVaporFraction", "outletVaporFraction"),
-                ("heatDuty", "heatRemoved")]);
+                ("temperatureChange", "temperatureChange"), ("heatDuty", "heatRemoved")],
+        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode" });
 
     // 166 — the runner forces Adiabatic at creation because DWSIM constructs in Legacy, whose
     // mixed-feed (T,P) flash is ill-posed for a pure compound on the saturation line. So iskra's
@@ -249,7 +350,8 @@ public static class UnitOpCatalog
             ["outletTemperature"] = hasOutletTemperature ? ["outletTemperature"] : [],
             ["nonIsothermalNonAdiabatic"] = [],
         },
-        Infer: hasOutletTemperature ? [("outletTemperature", "outletTemperature")] : []);
+        Infer: hasOutletTemperature ? [("outletTemperature", "outletTemperature")] : [],
+        Undrivable: hasOutletTemperature ? null : new() { ["outletTemperature"] = "this unit op has no such input — the mode is on the engine's enum and the property is not on the class" });
 
     private static readonly CalcModeDef SplitterModes = new(
         "OperationMode", typeof(DWSIM.UnitOperations.UnitOperations.Splitter.OpMode),
@@ -285,10 +387,16 @@ public static class UnitOpCatalog
             ["calcArea"] = ["coldSideOutletTemperature", "hotSideOutletTemperature"],
             ["shellandTubeRating"] = ["overallHeatTransferCoefficient", "area"],
             ["shellandTubeCalcFoulingFactor"] = ["overallHeatTransferCoefficient", "area"],
-            ["pinchPoint"] = [], ["thermalEfficiency"] = [],
-            ["outletVaporFraction1"] = [], ["outletVaporFraction2"] = [],
+            ["thermalEfficiency"] = ["thermalEfficiency"],
+            ["outletVaporFraction1"] = ["outletVaporFraction1"],
+            ["outletVaporFraction2"] = ["outletVaporFraction2"],
+            // A bool GATE rather than a setpoint — US2's mechanism, not a parameter.
+            ["pinchPoint"] = [],
         },
-        Infer: [("coldSideOutletTemperature", "calcTempHotOut"), ("hotSideOutletTemperature", "calcTempColdOut")]);
+        Infer: [("thermalEfficiency", "thermalEfficiency"),
+                ("outletVaporFraction1", "outletVaporFraction1"),
+                ("outletVaporFraction2", "outletVaporFraction2"),
+                ("coldSideOutletTemperature", "calcTempHotOut"), ("hotSideOutletTemperature", "calcTempColdOut")]);
 
     public static readonly Dictionary<string, UnitOpDef> Types = new[]
     {
@@ -318,6 +426,9 @@ public static class UnitOpCatalog
         new UnitOpDef("heater", "Heater", ObjectType.Heater,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             // A temperature DIFFERENCE, not a temperature. `temperatureDelta` converts as a
+             // magnitude; reusing "temperature" would send a 10 degC change as 283.15 K.
+             P("temperatureChange", "temperatureDelta", false, "TemperatureChange"),
              P("outletTemperature", "temperature", false, "OutletTemperature"),
              P("heatDuty", "power", false, "DeltaQ"),
              P("pressureDrop", "pressure", false, "DeltaP"),
@@ -326,6 +437,7 @@ public static class UnitOpCatalog
         new UnitOpDef("cooler", "Cooler", ObjectType.Cooler,
             [In("Inlet", 0), Out("Outlet", 0), EnergyOut("Energy Outlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             P("temperatureChange", "temperatureDelta", false, "TemperatureChange"),
              P("outletTemperature", "temperature", false, "OutletTemperature"),
              P("heatDuty", "power", false, "DeltaQ"),
              P("pressureDrop", "pressure", false, "DeltaP"),
@@ -353,6 +465,9 @@ public static class UnitOpCatalog
             //   - `overallUA: {2500, "W/K"}` — the honest unit — was REFUSED as an unknown power
             //     unit. The parameter was only reachable by declining to say what you meant.
             [P("calcMode", "string", false, "__calcMode"),
+             P("outletVaporFraction1", "dimensionless", false, "OutletVaporFraction1"),
+             P("outletVaporFraction2", "dimensionless", false, "OutletVaporFraction2"),
+             P("thermalEfficiency", "dimensionless", false, "ThermalEfficiency"),
              P("coldSideOutletTemperature", "temperature", false, "ColdSideOutletTemperature"),
              P("hotSideOutletTemperature", "temperature", false, "HotSideOutletTemperature"),
              P("overallHeatTransferCoefficient", "heatTransferCoefficient", false, "OverallCoefficient"),
@@ -413,6 +528,8 @@ public static class UnitOpCatalog
         new UnitOpDef("pump", "Pump", ObjectType.Pump,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             // D1 — `power` binds to `HeatDuty`; the pump has no `DeltaQ`. Probe decides (T004).
+             P("power", "power", false, "HeatDuty"),
              P("outletPressure", "pressure", false, "Pout", "POut"),
              P("pressureIncrease", "pressure", false, "DeltaP"),
              P("efficiency", "dimensionless", false, "Eficiencia", "Efficiency")], false, CalcMode: PumpModes),
@@ -420,6 +537,16 @@ public static class UnitOpCatalog
         new UnitOpDef("compressor", "Compressor", ObjectType.Compressor,
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             // 200 US1 — the setpoints behind modes 199 made selectable and could not drive.
+             // Units from `reference/dwsim_unitop_reference.csv`: PolytropicHead is METRES (head as
+             // a length, not a pressure) — guessing that is spec 036's overallUA mistake.
+             P("pressureRatio", "dimensionless", false, "PressureRatio"),
+             // 200 — BOTH names, adiabatic first. `PolytropicHead` alone measured INERT on both classes,
+             // and the class declares an `AdiabaticHead` too; the catalog's own efficiency here is
+             // `AdiabaticEfficiency`, so the adiabatic pair is the one this unit op is described in.
+             // SetEngineProperty tries these in order, so a build where only one exists still binds.
+             P("head", "length", false, "AdiabaticHead", "PolytropicHead"),
+             P("powerRequired", "power", false, "DeltaQ"),
              P("outletPressure", "pressure", false, "POut", "Pout"),
              P("pressureIncrease", "pressure", false, "DeltaP"),
              P("adiabaticEfficiency", "dimensionless", false, "AdiabaticEfficiency", "EficienciaAdiabatica")], false, CalcMode: CompressorModes),
@@ -427,6 +554,13 @@ public static class UnitOpCatalog
         new UnitOpDef("expander", "Expander (Turbine)", ObjectType.Expander,
             [In("Inlet", 0), Out("Outlet", 0), EnergyOut("Energy Outlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
+             P("pressureRatio", "dimensionless", false, "PressureRatio"),
+             // 200 — BOTH names, adiabatic first. `PolytropicHead` alone measured INERT on both classes,
+             // and the class declares an `AdiabaticHead` too; the catalog's own efficiency here is
+             // `AdiabaticEfficiency`, so the adiabatic pair is the one this unit op is described in.
+             // SetEngineProperty tries these in order, so a build where only one exists still binds.
+             P("head", "length", false, "AdiabaticHead", "PolytropicHead"),
+             P("powerGenerated", "power", false, "DeltaQ"),
              P("outletPressure", "pressure", false, "POut", "Pout"),
              P("pressureDecrease", "pressure", false, "DeltaP"),
              P("adiabaticEfficiency", "dimensionless", false, "AdiabaticEfficiency", "EficienciaAdiabatica")], false, CalcMode: ExpanderModes),
@@ -440,7 +574,26 @@ public static class UnitOpCatalog
              // a single flow coefficient and reports an `ActualKv` back. Dimensionless: a Kv is a
              // number read off a valve datasheet.
              P("kv", "dimensionless", false, "Kv"),
-             P("openingPct", "dimensionless", false, "OpeningPct")], false, CalcMode: ValveModes),
+             // 200 US2 — GATED. 199 measured this inert under an explicitly selected Kv mode
+             // (kvGeneral and kvGas, 20% and 80%, all four giving 7.987199 bar): choosing the mode
+             // is necessary and not sufficient, because the valve also needs to be told HOW an
+             // opening maps to a Kv.
+             //
+             // `Linear` of the five relationships (Linear, EqualPercentage, QuickOpening,
+             // UserDefined, DataTable), for the same reason 099 chose `Kv_General` among the Kv
+             // modes: it is the one that does not require the caller to have already decided
+             // something the datasheet has not told them. `EqualPercentage` is the commoner real
+             // trim and it is a CHOICE an engineer makes — exposing it is its own parameter, not a
+             // default to guess.
+             PGated("openingPct", "dimensionless",
+                 // TWO gates, and finding the second is why this is a mechanism rather than a fix.
+                 // `DefinedOpeningKvRelationShipType` alone left the parameter inert; the valve also
+                 // has `EnableOpeningKvRelationship`, a bool, and `CalculateKv` reads the opening
+                 // only when it is on. A relationship declared and not enabled reads exactly like no
+                 // relationship at all.
+                 [new GateDef("EnableOpeningKvRelationship", true),
+                  new GateDef("DefinedOpeningKvRelationShipType", "Linear")],
+                 "OpeningPct")], false, CalcMode: ValveModes),
 
         new UnitOpDef("pipe", "Pipe Segment", ObjectType.Pipe,
             [In("Inlet", 0), Out("Outlet", 0)],
@@ -481,7 +634,22 @@ public static class UnitOpCatalog
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
              P("volume", "volume", false, "Volume"),
-             P("length", "length", false, "Length")], true, CalcMode: ReactorModes(["volume", "length"], hasOutletTemperature: false)),
+             P("length", "length", false, "Length")
+             // 200 US4 — MEASURED AND NOT BOUND. `Diameter`, `CatalystLoading` and `ResidenceTime`
+             // are all settable on `Reactor_PFR`, and all three measured **inert** (2026-08-27,
+             // against the WGS kinetic baseline that `volume` and `length` both move).
+             //
+             // Why, and it is the same reason three times: they are not independent of what is
+             // already bound. `Volume` and `Length` fix the reacting volume, so `Diameter` is
+             // derivable rather than read; `ResidenceTime` is volume over flow, which is a READOUT
+             // the solve computes — exactly the risk flagged before probing; and `CatalystLoading`
+             // is a heterogeneous-catalysis quantity that a homogeneous kinetic reaction never
+             // consults.
+             //
+             // FR-001: a parameter that measures inert ships a recorded refusal, not a binding.
+             // Binding them would have added three knobs an engineer can turn with no effect —
+             // which is the exact defect specs 199 and 200 exist to remove.
+             ], true, CalcMode: ReactorModes(["volume", "length"], hasOutletTemperature: false)),
 
         // 141 US5 (FR-010): both columns' energy ports are `required: true` because that is what
         // the ENGINE enforces — without them BaseClass.Validate refuses with the opaque "Check
@@ -548,6 +716,32 @@ public static class UnitOpCatalog
         return head + string.Concat(parts.Skip(1).Select(p => char.ToUpperInvariant(p[0]) + p[1..]));
     }
 
+    /// <summary>
+    /// 200 — convert a temperature DIFFERENCE to kelvin. A delta is a magnitude, never a point.
+    ///
+    /// `Converter.ConvertToSI("C", 10)` returns **283.15**, which is right for an outlet temperature
+    /// and catastrophic for a temperature CHANGE. `ApplyParameter` keys that conversion on the
+    /// caller's unit string, so a `temperatureChange` declared as `unitType: "temperature"` would
+    /// take a 10 °C change to the engine as a 283.15 K change — accepted, converged, wrong, and
+    /// wearing DWSIM provenance on the way back. Spec 036's `overallUA` is the same shape and its
+    /// account is a few hundred lines up.
+    ///
+    /// A 10 K change IS a 10 °C change: the scales differ by an offset the difference cancels. °F and
+    /// Rankine differ by a factor of 5/9, also unambiguously.
+    ///
+    /// An unrecognised unit THROWS rather than passing the number through. Falling back to 1.0 is how
+    /// a bar/Pa confusion ships silently, and this whole spec exists because of values the engine
+    /// accepted and nobody questioned.
+    /// </summary>
+    public static double ConvertDelta(string unit, double value) => unit switch
+    {
+        "K" or "degK" or "C" or "degC" => value,
+        "F" or "degF" or "R" or "degR" => value * 5.0 / 9.0,
+        _ => throw new InvalidOperationException(
+            $"'{unit}' is not a temperature-difference unit. Use K/degC (a difference is the same in " +
+            "both) or F/R. A difference has no offset, so an absolute temperature unit cannot express one."),
+    };
+
     public static object ToPayload() => Types.Values
         .OrderBy(d => d.Type, StringComparer.Ordinal)
         .Select(d =>
@@ -580,6 +774,11 @@ public static class UnitOpCatalog
                             .Concat(cm.Consumes.TryGetValue(m.Name, out var only) ? only : [])
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .OrderBy(x => x, StringComparer.Ordinal).ToArray(),
+                        // 200 US3 — null when the mode can be driven. A non-null reason is rendered
+                        // beside a mode the app will not let you select, so the menu stays a
+                        // faithful picture of the engine: a hidden mode is indistinguishable from
+                        // one iskra forgot to implement.
+                        undrivableBecause = cm.UndrivableBecause(m.Name),
                     }),
                 };
             return row;

@@ -1,0 +1,674 @@
+object_type,status,clr_class,param_id,id_style,unit,default
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,PROP_AC_0,opaque,Pa,101325.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,PROP_AC_1,opaque,Pa,101325.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,PROP_AC_2,opaque,,12.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_1,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_2,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_3,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_4,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_5,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_6,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_7,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_8,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_9,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_10,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_11,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Stage_Efficiency_12,named,,1.0
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Estimated Height,named,mm,nan
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Estimated Diameter,named,mm,nan
+AbsorptionColumn,OK,DWSIM.UnitOperations.UnitOperations.AbsorptionColumn,Number of Stages,named,,12.0
+AirCooler2,ADD_ERR,,,,,
+AnalogGauge,OK,DWSIM.UnitOperations.UnitOperations.AnalogGauge,Monitored Value,named,,nan
+CapeOpenUO,ADD_ERR,,,,,
+ComponentSeparator,OK,DWSIM.UnitOperations.UnitOperations.ComponentSeparator,PROP_CP_0,opaque,kW,0.0
+ComponentSeparator,OK,DWSIM.UnitOperations.UnitOperations.ComponentSeparator,SpecifiedStreamIndex,named,,0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,PROP_CO_0,opaque,Pa,0.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,PROP_CO_1,opaque,%,75.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,PROP_CO_2,opaque,K.,0.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,PROP_CO_3,opaque,kW,0.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,PROP_CO_4,opaque,Pa,101325.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,PolytropicEfficiency,named,%,75.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,AdiabaticCoefficient,named,,0.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,PolytropicCoefficient,named,,0.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,AdiabaticHead,named,m,0.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,PolytropicHead,named,m,0.0
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,RotationSpeed,named,rpm,1500
+Compressor,OK,DWSIM.UnitOperations.UnitOperations.Compressor,PressureRatio,named,,nan
+CompressorExpander,ADD_ERR,,,,,
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,Active,named,,True
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,ManualOverride,named,,False
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,LastError,named,,0.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,CurrentError,named,,0.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,CumulativeError,named,,0.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,SetPointAbs,named,,1.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,Kp,named,,10.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,Ki,named,,2.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,Kd,named,,2.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,Output,named,,0.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,OutputMin,named,,-1000.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,OutputMax,named,,1000.0
+Controller_PID,OK,DWSIM.UnitOperations.SpecialOps.PIDController,OutputAbs,named,,0.0
+Controller_Python,OK,DWSIM.UnitOperations.SpecialOps.PythonController,Active,named,,True
+Controller_Python,OK,DWSIM.UnitOperations.SpecialOps.PythonController,SetPoint,named,,0.0
+Controller_Python,OK,DWSIM.UnitOperations.SpecialOps.PythonController,Output,named,,0.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,Flow Conductance,named,[kg/s]/[Pa^0.5],1.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,Volume,named,m3,1.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,Minimum Pressure,named,Pa,101325.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,Initialize using Inlet Stream,named,,-1.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,Reset Content,named,,0.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,PROP_CL_0,opaque,Pa,0.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,PROP_CL_1,opaque,,100.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,PROP_CL_2,opaque,K,298.14999999999998
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,PROP_CL_3,opaque,kW,0.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,PROP_CL_4,opaque,,0.0
+Cooler,OK,DWSIM.UnitOperations.UnitOperations.Cooler,PROP_CL_5,opaque,K.,0.0
+CustomUO,OK_NO_PROPS,DWSIM.UnitOperations.UnitOperations.CustomUO,,,,
+DigitalGauge,OK,DWSIM.UnitOperations.UnitOperations.DigitalGauge,Monitored Value,named,,nan
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,PROP_DC_2,opaque,Pa,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,PROP_DC_5,opaque,kW,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,PROP_DC_6,opaque,kW,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,PROP_DC_7,opaque,,12
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,PROP_DC_8,opaque,Pa,nan
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_1,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_2,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_3,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_4,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_5,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_6,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_7,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_8,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_9,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_10,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_11,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Pressure_12,named,Pa,101325.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_1,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_2,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_3,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_4,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_5,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_6,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_7,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_8,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_9,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_10,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_11,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Efficiency_12,named,,1.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_1,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_2,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_3,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_4,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_5,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_6,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_7,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_8,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_9,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_10,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_11,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Stage_Temperature_12,named,K,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Condenser_Specification_Value,named,,5.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Reboiler_Specification_Value,named,,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Global_Stage_Efficiency,named,,N/D
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Condenser_Calculated_Value,named,,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Reboiler_Calculated_Value,named,,0.0
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Estimated Height,named,mm,nan
+DistillationColumn,OK,DWSIM.UnitOperations.UnitOperations.DistillationColumn,Estimated Diameter,named,mm,nan
+Dummy,ADD_ERR,,,,,
+EnergyMixer,ADD_ERR,,,,,
+EnergyStream,OK,DWSIM.UnitOperations.Streams.EnergyStream,PROP_ES_0,opaque,kW,0.0
+ExcelUO,OK,DWSIM.UnitOperations.UnitOperations.ExcelUO,Calc_dQ,named,kW,0.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,PROP_TU_0,opaque,Pa,0.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,PROP_TU_1,opaque,%,75.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,PROP_TU_2,opaque,K.,0.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,PROP_TU_3,opaque,kW,0.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,PROP_TU_4,opaque,Pa,101325.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,PolytropicEfficiency,named,%,75.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,AdiabaticCoefficient,named,,0.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,PolytropicCoefficient,named,,0.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,AdiabaticHead,named,m,0.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,PolytropicHead,named,m,0.0
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,RotationSpeed,named,rpm,1500
+Expander,OK,DWSIM.UnitOperations.UnitOperations.Expander,PressureRatio,named,,nan
+External,ADD_ERR,,,,,
+Filter,OK,DWSIM.UnitOperations.UnitOperations.Filter,PROP_FT_0,opaque,kW,0.0
+Filter,OK,DWSIM.UnitOperations.UnitOperations.Filter,PROP_FT_1,opaque,m2,1.0
+Filter,OK,DWSIM.UnitOperations.UnitOperations.Filter,PROP_FT_2,opaque,%,0.0
+Filter,OK,DWSIM.UnitOperations.UnitOperations.Filter,PROP_FT_3,opaque,s,300.0
+Filter,OK,DWSIM.UnitOperations.UnitOperations.Filter,PROP_FT_4,opaque,m-1,1.0000000000000001e-09
+Filter,OK,DWSIM.UnitOperations.UnitOperations.Filter,PROP_FT_5,opaque,m/kg,10000000000.0
+Filter,OK,DWSIM.UnitOperations.UnitOperations.Filter,PROP_FT_6,opaque,,0.29999999999999999
+Filter,OK,DWSIM.UnitOperations.UnitOperations.Filter,PROP_FT_7,opaque,Pa,0.0
+FlowsheetUO,OK_NO_PROPS,DWSIM.UnitOperations.UnitOperations.Flowsheet,,,,
+GO_Animation,ADD_ERR,,,,,
+GO_Button,ADD_ERR,,,,,
+GO_Chart,ADD_ERR,,,,,
+GO_FloatingTable,ADD_ERR,,,,,
+GO_HTMLText,ADD_ERR,,,,,
+GO_Image,ADD_ERR,,,,,
+GO_InputControl,ADD_ERR,,,,,
+GO_MasterTable,ADD_ERR,,,,,
+GO_Rectangle,ADD_ERR,,,,,
+GO_SpreadsheetTable,ADD_ERR,,,,,
+GO_Table,ADD_ERR,,,,,
+GO_Text,ADD_ERR,,,,,
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,Cold Fluid Flow Conductance,named,[kg/s]/[Pa^0.5],1.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,Hot Fluid Flow Conductance,named,[kg/s]/[Pa^0.5],1.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,Volume for Cold Fluid,named,m3,1.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,Volume for Hot Fluid,named,m3,1.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,Cold Side Pressure,named,Pa,101325.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,Hot Side Pressure,named,Pa,101325.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,Minimum Pressure,named,Pa,101325.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,Initialize using Inlet Streams,named,,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,Reset Contents,named,,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_0,opaque,W/[m2.K],1000.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_1,opaque,m2,1.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_2,opaque,kW,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_3,opaque,K,298.14999999999998
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_4,opaque,K,298.14999999999998
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_5,opaque,mm,500.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_6,opaque,K.m2/W,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_7,opaque,%,20.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_8,opaque,,1.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_9,opaque,mm,250.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_10,opaque,mm,50.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_11,opaque,mm,60.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_12,opaque,m,5.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_13,opaque,K.m2/W,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_14,opaque,,2.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_15,opaque,,50.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_16,opaque,mm,70.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_17,opaque,K.m2/W,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_18,opaque,,1.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_19,opaque,K.,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_20,opaque,K.m2/W,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_21,opaque,K.m2/W,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_22,opaque,K.m2/W,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_23,opaque,,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_24,opaque,,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_25,opaque,%,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_26,opaque,kW,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_27,opaque,K.,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_28,opaque,kW,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_29,opaque,,1.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_30,opaque,,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_31,opaque,,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_32,opaque,Pa,0.0
+HeatExchanger,OK,DWSIM.UnitOperations.UnitOperations.HeatExchanger,PROP_HX_33,opaque,Pa,0.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,Flow Conductance,named,[kg/s]/[Pa^0.5],1.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,Volume,named,m3,1.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,Minimum Pressure,named,Pa,101325.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,Initialize using Inlet Stream,named,,-1.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,Reset Content,named,,0.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,PROP_HT_0,opaque,Pa,0.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,PROP_HT_1,opaque,,100.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,PROP_HT_2,opaque,K,298.14999999999998
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,PROP_HT_3,opaque,kW,0.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,PROP_HT_4,opaque,,0.0
+Heater,OK,DWSIM.UnitOperations.UnitOperations.Heater,PROP_HT_5,opaque,K.,0.0
+HeaterCooler,ADD_ERR,,,,,
+HydroelectricTurbine,OK,DWSIM.UnitOperations.UnitOperations.HydroelectricTurbine,Efficiency,named,,75.0
+HydroelectricTurbine,OK,DWSIM.UnitOperations.UnitOperations.HydroelectricTurbine,Static Head,named,m,1.0
+HydroelectricTurbine,OK,DWSIM.UnitOperations.UnitOperations.HydroelectricTurbine,Velocity Head,named,m,1.0
+HydroelectricTurbine,OK,DWSIM.UnitOperations.UnitOperations.HydroelectricTurbine,Total Head,named,m,0.0
+HydroelectricTurbine,OK,DWSIM.UnitOperations.UnitOperations.HydroelectricTurbine,Inlet Velocity,named,m/s,1.0
+HydroelectricTurbine,OK,DWSIM.UnitOperations.UnitOperations.HydroelectricTurbine,Outlet Velocity,named,m/s,0.5
+HydroelectricTurbine,OK,DWSIM.UnitOperations.UnitOperations.HydroelectricTurbine,Generated Power,named,kW,0.0
+Input,OK_NO_PROPS,DWSIM.UnitOperations.UnitOperations.Input,,,,
+LevelGauge,OK,DWSIM.UnitOperations.UnitOperations.LevelGauge,Monitored Value,named,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_0,opaque,K,298.14999999999998
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_1,opaque,Pa,101325.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_2,opaque,kg/s,1.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_3,opaque,mol/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_4,opaque,m3/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_5,opaque,kg/m3,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_6,opaque,kg/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_7,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_8,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_9,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_10,opaque,kJ/[kmol.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_11,opaque,W/[m.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_12,opaque,kg/m3,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_13,opaque,kg/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_14,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_15,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_16,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_17,opaque,kJ/[kmol.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_18,opaque,W/[m.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_19,opaque,m2/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_20,opaque,Pa.s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_21,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_22,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_23,opaque,kg/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_24,opaque,mol/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_25,opaque,m3/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_26,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_27,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_28,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_29,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_30,opaque,kg/m3,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_31,opaque,kg/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_32,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_33,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_34,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_35,opaque,kJ/[kmol.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_36,opaque,W/[m.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_37,opaque,m2/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_38,opaque,Pa.s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_39,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_40,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_41,opaque,kg/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_42,opaque,mol/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_43,opaque,m3/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_44,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_45,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_46,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_47,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_48,opaque,kg/m3,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_49,opaque,kg/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_50,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_51,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_52,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_53,opaque,kJ/[kmol.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_54,opaque,W/[m.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_55,opaque,m2/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_56,opaque,Pa.s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_57,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_58,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_59,opaque,kg/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_60,opaque,mol/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_61,opaque,m3/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_62,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_63,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_64,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_65,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_66,opaque,kg/m3,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_67,opaque,kg/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_68,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_69,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_70,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_71,opaque,kJ/[kmol.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_72,opaque,W/[m.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_73,opaque,m2/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_74,opaque,Pa.s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_75,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_76,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_77,opaque,kg/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_78,opaque,mol/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_79,opaque,m3/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_80,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_81,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_82,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_83,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_84,opaque,kg/m3,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_85,opaque,kg/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_86,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_87,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_88,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_89,opaque,kJ/[kmol.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_90,opaque,W/[m.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_91,opaque,m2/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_92,opaque,Pa.s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_93,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_94,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_95,opaque,kg/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_96,opaque,mol/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_97,opaque,m3/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_98,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_99,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_100,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_101,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_131,opaque,kg/m3,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_132,opaque,kg/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_133,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_134,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_135,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_136,opaque,kJ/[kmol.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_137,opaque,W/[m.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_138,opaque,m2/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_139,opaque,Pa.s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_140,opaque,kJ/[kg.K],0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_141,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_142,opaque,kg/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_143,opaque,mol/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_144,opaque,m3/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_145,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_146,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_147,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_148,opaque,,nan
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_126,opaque,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_127,opaque,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_128,opaque,K,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_129,opaque,K,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_130,opaque,,
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_153,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_246,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_247,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_248,opaque,K,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_249,opaque,K.,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_155,opaque,1/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_156,opaque,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_157,opaque,m/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_158,opaque,K/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_159,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_160,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_161,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_162,opaque,1/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_163,opaque,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_164,opaque,m/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_165,opaque,K/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_166,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_167,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_168,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_169,opaque,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_170,opaque,m/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_171,opaque,K/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_172,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_173,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_174,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_175,opaque,1/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_176,opaque,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_177,opaque,m/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_178,opaque,K/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_179,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_180,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_181,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_182,opaque,1/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_183,opaque,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_184,opaque,m/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_185,opaque,K/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_186,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_187,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_188,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_189,opaque,1/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_190,opaque,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_191,opaque,m/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_192,opaque,K/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_193,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_194,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_195,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_196,opaque,1/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_198,opaque,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_199,opaque,m/s,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_200,opaque,K/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_201,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_202,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_203,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_204,opaque,1/Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_205,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_206,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_207,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_208,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_209,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_210,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_211,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_212,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_213,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_214,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_215,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_216,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_217,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_218,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_219,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_220,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_221,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_222,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_223,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_224,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_225,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_226,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_227,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_228,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_229,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_230,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_231,opaque,kJ/kmol,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_154,opaque,kW,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_250,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_251,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_252,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_253,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_254,opaque,kJ/kg,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_255,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_256,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_257,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_258,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_259,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,CO2 Loading,named,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,CO2 Partial Pressure,named,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,H2S Loading,named,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,H2S Partial Pressure,named,Pa,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,Mean Particle Size (Solid),named,mm,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,Particle Size Standard Deviation (Solid),named,mm,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_260,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_261,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_262,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_263,opaque,,0.0
+MaterialStream,OK,DWSIM.Thermodynamics.Streams.MaterialStream,PROP_MS_264,opaque,,0.0
+Mixer,OK_NO_PROPS,DWSIM.UnitOperations.UnitOperations.Mixer,,,,
+Nenhum,ADD_ERR,,,,,
+NodeEn,ADD_ERR,,,,,
+NodeIn,OK_NO_PROPS,DWSIM.UnitOperations.UnitOperations.Mixer,,,,
+NodeOut,OK,DWSIM.UnitOperations.UnitOperations.Splitter,PROP_SP_1,opaque,,0.0
+NodeOut,OK,DWSIM.UnitOperations.UnitOperations.Splitter,PROP_SP_2,opaque,,0.0
+OT_Adjust,OK,DWSIM.UnitOperations.SpecialOps.Adjust,MinVal,named,,0.0
+OT_Adjust,OK,DWSIM.UnitOperations.SpecialOps.Adjust,MaxVal,named,,0.0
+OT_Adjust,OK,DWSIM.UnitOperations.SpecialOps.Adjust,AdjustValue,named,,1.0
+OT_Adjust,OK,DWSIM.UnitOperations.SpecialOps.Adjust,Tolerance,named,,0.0001
+OT_Adjust,OK,DWSIM.UnitOperations.SpecialOps.Adjust,StepSize,named,,0.10000000000000001
+OT_Adjust,OK,DWSIM.UnitOperations.SpecialOps.Adjust,MaximumIterations,named,,10
+OT_EnergyRecycle,OK,DWSIM.UnitOperations.SpecialOps.EnergyRecycle,PROP_ER_0,opaque,,100.0
+OT_EnergyRecycle,OK,DWSIM.UnitOperations.SpecialOps.EnergyRecycle,PROP_ER_1,opaque,kW,0.10000000000000001
+OT_EnergyRecycle,OK,DWSIM.UnitOperations.SpecialOps.EnergyRecycle,PROP_ER_2,opaque,kW,0.0
+OT_Recycle,OK,DWSIM.UnitOperations.SpecialOps.Recycle,PROP_RY_0,opaque,,50.0
+OT_Recycle,OK,DWSIM.UnitOperations.SpecialOps.Recycle,PROP_RY_1,opaque,kg/s,0.01
+OT_Recycle,OK,DWSIM.UnitOperations.SpecialOps.Recycle,PROP_RY_2,opaque,K.,0.10000000000000001
+OT_Recycle,OK,DWSIM.UnitOperations.SpecialOps.Recycle,PROP_RY_3,opaque,Pa,0.10000000000000001
+OT_Recycle,OK,DWSIM.UnitOperations.SpecialOps.Recycle,PROP_RY_4,opaque,kg/s,0.0
+OT_Recycle,OK,DWSIM.UnitOperations.SpecialOps.Recycle,PROP_RY_5,opaque,K.,0.0
+OT_Recycle,OK,DWSIM.UnitOperations.SpecialOps.Recycle,PROP_RY_6,opaque,Pa,0.0
+OT_Spec,OK,DWSIM.UnitOperations.SpecialOps.Spec,SpecMin,named,,0.0
+OT_Spec,OK,DWSIM.UnitOperations.SpecialOps.Spec,SpecMax,named,,0.0
+OT_Spec,OK,DWSIM.UnitOperations.SpecialOps.Spec,Expression,named,,
+OrificePlate,OK,DWSIM.UnitOperations.UnitOperations.OrificePlate,PROP_OP_0,opaque,,1.0
+OrificePlate,OK,DWSIM.UnitOperations.UnitOperations.OrificePlate,PROP_OP_1,opaque,m,0.10000000000000001
+OrificePlate,OK,DWSIM.UnitOperations.UnitOperations.OrificePlate,PROP_OP_2,opaque,m,0.20000000000000001
+OrificePlate,OK,DWSIM.UnitOperations.UnitOperations.OrificePlate,PROP_OP_3,opaque,,1.0
+OrificePlate,OK,DWSIM.UnitOperations.UnitOperations.OrificePlate,PROP_OP_4,opaque,,0.5
+OrificePlate,OK,DWSIM.UnitOperations.UnitOperations.OrificePlate,PROP_OP_5,opaque,Pa,0.0
+OrificePlate,OK,DWSIM.UnitOperations.UnitOperations.OrificePlate,PROP_OP_6,opaque,Pa,0.0
+OrificePlate,OK,DWSIM.UnitOperations.UnitOperations.OrificePlate,PROP_OP_7,opaque,K.,0.0
+PEMFuelCell,OK,DWSIM.UnitOperations.UnitOperations.PEMFC_Amphlett,i-start,named,A,0.0
+PEMFuelCell,OK,DWSIM.UnitOperations.UnitOperations.PEMFC_Amphlett,i-stop,named,A,75.0
+PEMFuelCell,OK,DWSIM.UnitOperations.UnitOperations.PEMFC_Amphlett,i-step,named,A,0.10000000000000001
+PEMFuelCell,OK,DWSIM.UnitOperations.UnitOperations.PEMFC_Amphlett,A,named,cm2,0.0050600000000000003
+PEMFuelCell,OK,DWSIM.UnitOperations.UnitOperations.PEMFC_Amphlett,l,named,cm,0.00017799999999999999
+PEMFuelCell,OK,DWSIM.UnitOperations.UnitOperations.PEMFC_Amphlett,lambda,named,,23.0
+PEMFuelCell,OK,DWSIM.UnitOperations.UnitOperations.PEMFC_Amphlett,R,named,ohm,0.0
+PEMFuelCell,OK,DWSIM.UnitOperations.UnitOperations.PEMFC_Amphlett,JMax,named,A/cm2,1.5
+PEMFuelCell,OK,DWSIM.UnitOperations.UnitOperations.PEMFC_Amphlett,N,named,,1.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,Time step discretization,named,,10.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_0,opaque,Pa,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_1,opaque,K.,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_2,opaque,kW,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_3,opaque,Pa,101325.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_4,opaque,K,298.14999999999998
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_5,opaque,W/[m2.K],0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_6,opaque,K,298.14999999999998
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_7,opaque,K./m,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_8,opaque,m,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PROP_PS_9,opaque,m,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PressureDropStatic,named,Pa,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,PressureDropFriction,named,Pa,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,CalculationType",named,,Definir_CGTC
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,OverallHTC",named,W/[m2.K],0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,ExternalTemperatureDefinedHTC",named,K,298.14999999999998
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,ExternalTemperatureGradientDefinedHTC",named,K./m,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,ExternalTemperatureEstimatedHTC",named,K,298.14999999999998
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,ExternalTemperatureGradientEstimatedHTC",named,K./m,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,HeatExchanged",named,kW,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,IncludeWallHTC",named,,False
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,IncludeInternalHTC",named,,False
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,IncludeInsulationHTC",named,,False
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,InsulationThickness",named,mm,0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,InsulationThermalConductivity",named,W/[m.K],0.0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,IncludeExternalHTC",named,,False
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,ExternalEnvironmentType",named,,0
+Pipe,OK,DWSIM.UnitOperations.UnitOperations.Pipe,"ThermalProfile,ExternalEnvironmentVelocityOrDeepness",named,m/s,0.0
+Pump,OK,DWSIM.UnitOperations.UnitOperations.Pump,PROP_PU_0,opaque,Pa,0.0
+Pump,OK,DWSIM.UnitOperations.UnitOperations.Pump,PROP_PU_1,opaque,,75.0
+Pump,OK,DWSIM.UnitOperations.UnitOperations.Pump,PROP_PU_2,opaque,K.,0.0
+Pump,OK,DWSIM.UnitOperations.UnitOperations.Pump,PROP_PU_3,opaque,kW,0.0
+Pump,OK,DWSIM.UnitOperations.UnitOperations.Pump,PROP_PU_4,opaque,m,0.0
+Pump,OK,DWSIM.UnitOperations.UnitOperations.Pump,PROP_PU_5,opaque,Pa,0.0
+Pump,OK,DWSIM.UnitOperations.UnitOperations.Pump,PROP_PU_6,opaque,m,0.0
+Pump,OK,DWSIM.UnitOperations.UnitOperations.Pump,PROP_PU_7,opaque,m,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,Operating Pressure,named,Pa,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,Liquid Level,named,m,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,Height,named,m,1.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,Minimum Pressure,named,Pa,101325.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,Initialize using Inlet Stream,named,,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,Reset Contents,named,,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,PROP_CS_0,opaque,Pa,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,PROP_CS_1,opaque,s,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,PROP_CS_2,opaque,m3,1.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,PROP_CS_3,opaque,K.,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,PROP_CS_4,opaque,kW,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,PROP_CS_5,opaque,K,298.14999999999998
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,PROP_CS_6,opaque,m3,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,PROP_CS_7,opaque,s,0.0
+RCT_CSTR,OK,DWSIM.UnitOperations.Reactors.Reactor_CSTR,Calculation Mode,named,,Adiabatic
+RCT_Conversion,OK,DWSIM.UnitOperations.Reactors.Reactor_Conversion,Operating Pressure (Dynamics),named,Pa,0.0
+RCT_Conversion,OK,DWSIM.UnitOperations.Reactors.Reactor_Conversion,Liquid Level,named,m,0.0
+RCT_Conversion,OK,DWSIM.UnitOperations.Reactors.Reactor_Conversion,Volume,named,m3,1.0
+RCT_Conversion,OK,DWSIM.UnitOperations.Reactors.Reactor_Conversion,Height,named,m,2.0
+RCT_Conversion,OK,DWSIM.UnitOperations.Reactors.Reactor_Conversion,Minimum Pressure,named,Pa,101325.0
+RCT_Conversion,OK,DWSIM.UnitOperations.Reactors.Reactor_Conversion,Initialize using Inlet Stream,named,,0.0
+RCT_Conversion,OK,DWSIM.UnitOperations.Reactors.Reactor_Conversion,Reset Contents,named,,0.0
+RCT_Conversion,OK,DWSIM.UnitOperations.Reactors.Reactor_Conversion,PROP_CR_0,opaque,Pa,0.0
+RCT_Conversion,OK,DWSIM.UnitOperations.Reactors.Reactor_Conversion,Calculation Mode,named,,Adiabatic
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Operating Pressure (Dynamics),named,Pa,0.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Liquid Level,named,m,0.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Volume,named,m3,1.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Height,named,m,2.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Minimum Pressure,named,Pa,101325.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Initialize using Inlet Stream,named,,0.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Reset Contents,named,,0.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,PROP_EQ_0,opaque,Pa,0.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,PROP_EQ_1,opaque,K,0.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Calculation Mode,named,,Adiabatic
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Initial Gibbs Energy,named,kW,0.0
+RCT_Equilibrium,OK,DWSIM.UnitOperations.Reactors.Reactor_Equilibrium,Final Gibbs Energy,named,kW,0.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Operating Pressure (Dynamics),named,Pa,0.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Liquid Level,named,m,0.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Volume,named,m3,1.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Height,named,m,2.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Minimum Pressure,named,Pa,101325.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Initialize using Inlet Stream,named,,0.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Reset Contents,named,,0.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,PROP_GR_0,opaque,Pa,0.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,PROP_GR_1,opaque,K,298.14999999999998
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Calculation Mode,named,,Adiabatic
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Initial Gibbs Energy,named,kW,0.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Final Gibbs Energy,named,kW,0.0
+RCT_Gibbs,OK,DWSIM.UnitOperations.Reactors.Reactor_Gibbs,Element Balance Residue,named,,0.0
+RCT_GibbsReaktoro,OK_NO_PROPS,DWSIM.UnitOperations.Reactors.Reactor_ReaktoroGibbs,,,,
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,Max Sections,named,,20.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,Reset Contents,named,,0.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_0,opaque,Pa,0.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_1,opaque,s,0.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_2,opaque,m3,1.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_3,opaque,m,1.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_4,opaque,kg/m3,0.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_5,opaque,mm,0.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_6,opaque,,0.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_7,opaque,K.,0.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_8,opaque,kW,0.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_9,opaque,mm,100.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_10,opaque,,1.0
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_11,opaque,,0.01
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,PROP_PF_12,opaque,K,298.14999999999998
+RCT_PFR,OK,DWSIM.UnitOperations.Reactors.Reactor_PFR,Calculation Mode,named,,Adiabatic
+ReboiledAbsorber,ADD_ERR,,,,,
+RefluxedAbsorber,ADD_ERR,,,,,
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_0,opaque,,1.5
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_1,opaque,,0.01
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_2,opaque,,0.01
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_3,opaque,Pa,101325.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_4,opaque,Pa,101325.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_5,opaque,,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_6,opaque,,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_7,opaque,,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_8,opaque,mol/s,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_9,opaque,mol/s,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_10,opaque,mol/s,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_11,opaque,mol/s,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_12,opaque,kW,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_13,opaque,kW,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,PROP_SC_14,opaque,,0.0
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,Stage Height,named,m,0.5
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,Estimated Height,named,m,nan
+ShortcutColumn,OK,DWSIM.UnitOperations.UnitOperations.ShortcutColumn,Estimated Diameter,named,m,nan
+SolarPanel,OK,DWSIM.UnitOperations.UnitOperations.SolarPanel,Efficiency,named,%,15.0
+SolarPanel,OK,DWSIM.UnitOperations.UnitOperations.SolarPanel,User-Defined Solar Irradiation,named,kW/m2,1.0
+SolarPanel,OK,DWSIM.UnitOperations.UnitOperations.SolarPanel,Actual Solar Irradiation,named,kW/m2,1.0
+SolarPanel,OK,DWSIM.UnitOperations.UnitOperations.SolarPanel,Panel Area,named,m2,1.0
+SolarPanel,OK,DWSIM.UnitOperations.UnitOperations.SolarPanel,Number of Panels,named,,1
+SolarPanel,OK,DWSIM.UnitOperations.UnitOperations.SolarPanel,Generated Power,named,kW,0.0
+SolidOps,ADD_ERR,,,,,
+SolidSeparator,OK,DWSIM.UnitOperations.UnitOperations.SolidsSeparator,PROP_SS_1,opaque,%,100.0
+SolidSeparator,OK,DWSIM.UnitOperations.UnitOperations.SolidsSeparator,PROP_SS_2,opaque,%,100.0
+Splitter,OK,DWSIM.UnitOperations.UnitOperations.Splitter,PROP_SP_1,opaque,,0.0
+Splitter,OK,DWSIM.UnitOperations.UnitOperations.Splitter,PROP_SP_2,opaque,,0.0
+Switch,OK_NO_PROPS,DWSIM.UnitOperations.UnitOperations.Switch,,,,
+TPVessel,ADD_ERR,,,,,
+Tank,OK,DWSIM.UnitOperations.UnitOperations.Tank,Liquid Level,named,m,0.0
+Tank,OK,DWSIM.UnitOperations.UnitOperations.Tank,Height,named,m,2.0
+Tank,OK,DWSIM.UnitOperations.UnitOperations.Tank,Initialize using Inlet Stream,named,,0.0
+Tank,OK,DWSIM.UnitOperations.UnitOperations.Tank,Reset Content,named,,0.0
+Tank,OK,DWSIM.UnitOperations.UnitOperations.Tank,PROP_TK_0,opaque,Pa,0.0
+Tank,OK,DWSIM.UnitOperations.UnitOperations.Tank,PROP_TK_1,opaque,m3,0.0
+Tank,OK,DWSIM.UnitOperations.UnitOperations.Tank,PROP_TK_2,opaque,s,0.0
+Valve,OK,DWSIM.UnitOperations.UnitOperations.Valve,Actuator Delay,named,s,0.0
+Valve,OK,DWSIM.UnitOperations.UnitOperations.Valve,PROP_VA_0,opaque,,0.0
+Valve,OK,DWSIM.UnitOperations.UnitOperations.Valve,PROP_VA_1,opaque,Pa,0.0
+Valve,OK,DWSIM.UnitOperations.UnitOperations.Valve,PROP_VA_2,opaque,Pa,101325.0
+Valve,OK,DWSIM.UnitOperations.UnitOperations.Valve,PROP_VA_3,opaque,K.,0.0
+Valve,OK,DWSIM.UnitOperations.UnitOperations.Valve,PROP_VA_4,opaque,,100.0
+Valve,OK,DWSIM.UnitOperations.UnitOperations.Valve,PROP_VA_5,opaque,,50.0
+Valve,OK,DWSIM.UnitOperations.UnitOperations.Valve,PROP_VA_6,opaque,,50.0
+Valve,OK,DWSIM.UnitOperations.UnitOperations.Valve,Actual Flow Coefficient,named,,0.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Vessel Orientation,named,,0.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Operating Pressure,named,Pa,0.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Liquid Level,named,m,0.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Get Volume from Dimensions,named,,0.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Volume,named,m3,1.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Get Height from Dimensions,named,,0.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Height,named,m,2.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Minimum Pressure,named,Pa,101325.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Initialize using Inlet Stream,named,,-1.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,Reset Content,named,,0.0
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,PROP_SV_0,opaque,K,298.14999999999998
+Vessel,OK,DWSIM.UnitOperations.UnitOperations.Vessel,PROP_SV_1,opaque,Pa,101325.0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Voltage,named,V,0.0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Thermoneutral Voltage,named,V,0.0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Reversible Voltage,named,V,0.0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Number of Cells,named,,0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Cell Voltage,named,V,0.0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Waste Heat,named,kW,0.0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Current,named,A,0.0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Electron Transfer,named,mol/s,0.0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Efficiency,named,,0.0
+WaterElectrolyzer,OK,DWSIM.UnitOperations.UnitOperations.WaterElectrolyzer,Input Efficiency,named,,0.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Efficiency,named,%,80.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,User-Defined Wind Speed,named,m/s,10.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Actual Wind Speed,named,m/s,10.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,User-Defined Air Temperature,named,K,298.14999999999998
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Actual Air Temperature,named,K,298.14999999999998
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,User-Defined Air Pressure,named,Pa,101325.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Actual Air Pressure,named,Pa,101325.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,User-Defined Relative Humidity,named,%,30.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Actual Relative Humidity,named,%,30.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Disk Area,named,m2,10.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Rotor Diameter,named,m,0.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Number of Units,named,,1
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Generated Power,named,kW,0.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Maximum Theoretical Power,named,kW,0.0
+WindTurbine,OK,DWSIM.UnitOperations.UnitOperations.WindTurbine,Calculated Air Density,named,kg/m3,0.0

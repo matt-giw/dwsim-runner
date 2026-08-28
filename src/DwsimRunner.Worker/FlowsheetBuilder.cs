@@ -444,6 +444,18 @@ public static class FlowsheetBuilder
         {
             wire = entry.Value.GetString();
             isExplicit = true;
+            // 200 FR-006b — a COLLAPSED name is refused by pointing at its survivor. Without the
+            // survivor it is a dead end; with it, it is an instruction. Refusing rather than
+            // silently mapping is deliberate (clarified 2026-08-27): the app stops offering the name
+            // the moment this ships, so the only documents that can carry it were saved in the
+            // window between 199 merging and this landing.
+            if (cm.AliasOf(wire!) is { } survivor)
+            {
+                error("UNKNOWN_CALC_MODE", o.Tag,
+                    $"'{wire}' was a second name for '{survivor}' on '{def.Type}' and does the same " +
+                    $"thing — use '{survivor}'.", null);
+                return (null, false);
+            }
             if (!cm.TryResolve(wire!, out _))
             {
                 // Name the alternatives, not just the failure. Spec 138 measured that the model
@@ -603,6 +615,12 @@ public static class FlowsheetBuilder
             ? je.ValueKind switch
             {
                 JsonValueKind.Number when p.UnitType == "integer" => je.GetInt32(),
+                // 200 — a temperature DIFFERENCE converts as a magnitude. `ConvertToSI("C", 10)` is
+                // 283.15, which is correct for a point and a 273x error for a change. The unit type
+                // is what tells the two apart, and this is the one place it can.
+                JsonValueKind.Number when p.UnitType == "temperatureDelta" => unit is { Length: > 0 }
+                    ? UnitOpCatalog.ConvertDelta(unit, je.GetDouble())
+                    : je.GetDouble(),
                 JsonValueKind.Number => unit is { Length: > 0 }
                     ? DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI(unit, je.GetDouble())
                     : je.GetDouble(),
@@ -612,6 +630,27 @@ public static class FlowsheetBuilder
                 _ => throw new InvalidOperationException("unsupported parameter value"),
             }
             : value;
+
+        // 200 FR-002 — the gate, BEFORE the value. Same ordering argument as 199's mode-before-
+        // parameters, one level down: a value written while the property that admits it is unset is
+        // a value the engine does not read. Measured on `valve.openingPct`, which stayed inert under
+        // an explicitly selected Kv mode until `DefinedOpeningKvRelationShipType` was set first.
+        foreach (var gate in p.Gates ?? [])
+        {
+            var gp = so.GetType().GetProperty(gate.Property);
+            if (gp is null)
+            {
+                error("BUILD_FAILED", o.Tag,
+                    $"'{def.Type}' declares gate property '{gate.Property}' for '{p.Name}', " +
+                    "which this engine build does not expose.", null);
+                return;
+            }
+            // An enum gate is declared by MEMBER NAME — the ordinal differs per unit op and a shared
+            // integer is unsafe, which is research R1's hazard in this spec's vocabulary.
+            gp.SetValue(so, gp.PropertyType.IsEnum && gate.Value is string member
+                ? Enum.Parse(gp.PropertyType, member)
+                : Convert.ChangeType(gate.Value, gp.PropertyType));
+        }
 
         if (p.EngineProperties.Length > 0 && SetEngineProperty(so, p.EngineProperties, engineValue))
             return;
