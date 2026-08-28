@@ -15,7 +15,25 @@ using DWSIM.Interfaces.Enums.GraphicObjects;
 namespace DwsimRunner.Worker;
 
 public sealed record PortDef(string Name, string Direction, string Accepts, bool Required, int Index);
-public sealed record ParamDef(string Name, string UnitType, bool Required, string[] EngineProperties);
+/// <param name="Gate">
+/// 200 FR-002 — a property that must be set BEFORE this value, or the engine will not read it.
+///
+/// DWSIM has values whose meaning is selected by a second property, and there is no way to write
+/// that down as a quantity. `Valve.OpeningPct` is the measured case: 199 proved it stays inert with
+/// a Kv calculation mode explicitly selected, because the valve also needs
+/// `DefinedOpeningKvRelationShipType` to say HOW an opening maps to a Kv. Same shape on
+/// `Reactor_PFR` (`UseUserDefinedPressureDrop` + `UserDefinedPressureDrop`), `HeatExchanger`
+/// (`PinchPointAtOutlets`) and `Cooler` (`UseTemperatureEstimates`).
+///
+/// This is structurally what `CalcModeDef` does for calculation modes, one level down: *the engine
+/// reads a value only when something else selects it.* Declared on the PARAMETER rather than on the
+/// mode, because the gate belongs to the value — the PFR's pressure-drop switch applies whatever
+/// mode the reactor runs in.
+/// </param>
+public sealed record GateDef(string Property, object Value);
+
+public sealed record ParamDef(string Name, string UnitType, bool Required, string[] EngineProperties,
+    GateDef[]? Gates = null);
 /// <param name="ExternalId">
 /// Set ONLY for an EXTERNAL unit operation, and it is the engine's registry key ("Water
 /// Electrolyzer"), not the wire type.
@@ -121,6 +139,14 @@ public static class UnitOpCatalog
     private static ParamDef P(string name, string unitType, bool required, params string[] engineProps) =>
         new(name, unitType, required, engineProps);
 
+    /// <summary>A parameter the engine reads only once `gateProperty` is set to `gateValue`.</summary>
+    /// <summary>A parameter the engine reads only once every gate is set. MORE THAN ONE is the
+    /// common case, not the exception: the valve's opening needs both a switch that turns the
+    /// opening/Kv relationship ON and a type that says WHICH relationship.</summary>
+    private static ParamDef PGated(string name, string unitType, GateDef[] gates,
+        params string[] engineProps) =>
+        new(name, unitType, false, engineProps, gates);
+
     // ── 199: calculation modes ──────────────────────────────────────────────────────────────────
     // The VALUES are never written here — they are reflected off the engine enum (FR-001). What is
     // declared is which parameters each mode reads, which is a fact about the engine that no
@@ -195,7 +221,12 @@ public static class UnitOpCatalog
             ["kvLiquid"] = ["kv", "openingPct"], ["kvGas"] = ["kv", "openingPct"],
             ["kvSteam"] = ["kv", "openingPct"], ["kvGeneral"] = ["kv", "openingPct"],
         },
-        Infer: [("kv", "kvGeneral"), ("pressureDrop", "deltaP"), ("outletPressure", "outletPressure")]);
+        // 200 R11 — `openingPct` needs its own rule for the same reason every other setpoint did:
+        // stating an opening with no rule selects no mode, and an unselected mode reads nothing.
+        // It infers a Kv mode because an opening only means anything through an opening/Kv
+        // relationship — which is also why it carries two gates.
+        Infer: [("openingPct", "kvGeneral"), ("kv", "kvGeneral"),
+                ("pressureDrop", "deltaP"), ("outletPressure", "outletPressure")]);
 
     // Thermal. Note the ordinals differ between the two (research R1): EnergyStream is 2 on Heater
     // and 4 on Cooler; OutletVaporFraction is 3 vs 2. Two declarations, never one shared table.
@@ -490,7 +521,26 @@ public static class UnitOpCatalog
              // a single flow coefficient and reports an `ActualKv` back. Dimensionless: a Kv is a
              // number read off a valve datasheet.
              P("kv", "dimensionless", false, "Kv"),
-             P("openingPct", "dimensionless", false, "OpeningPct")], false, CalcMode: ValveModes),
+             // 200 US2 — GATED. 199 measured this inert under an explicitly selected Kv mode
+             // (kvGeneral and kvGas, 20% and 80%, all four giving 7.987199 bar): choosing the mode
+             // is necessary and not sufficient, because the valve also needs to be told HOW an
+             // opening maps to a Kv.
+             //
+             // `Linear` of the five relationships (Linear, EqualPercentage, QuickOpening,
+             // UserDefined, DataTable), for the same reason 099 chose `Kv_General` among the Kv
+             // modes: it is the one that does not require the caller to have already decided
+             // something the datasheet has not told them. `EqualPercentage` is the commoner real
+             // trim and it is a CHOICE an engineer makes — exposing it is its own parameter, not a
+             // default to guess.
+             PGated("openingPct", "dimensionless",
+                 // TWO gates, and finding the second is why this is a mechanism rather than a fix.
+                 // `DefinedOpeningKvRelationShipType` alone left the parameter inert; the valve also
+                 // has `EnableOpeningKvRelationship`, a bool, and `CalculateKv` reads the opening
+                 // only when it is on. A relationship declared and not enabled reads exactly like no
+                 // relationship at all.
+                 [new GateDef("EnableOpeningKvRelationship", true),
+                  new GateDef("DefinedOpeningKvRelationShipType", "Linear")],
+                 "OpeningPct")], false, CalcMode: ValveModes),
 
         new UnitOpDef("pipe", "Pipe Segment", ObjectType.Pipe,
             [In("Inlet", 0), Out("Outlet", 0)],

@@ -619,6 +619,27 @@ public static class FlowsheetBuilder
             }
             : value;
 
+        // 200 FR-002 — the gate, BEFORE the value. Same ordering argument as 199's mode-before-
+        // parameters, one level down: a value written while the property that admits it is unset is
+        // a value the engine does not read. Measured on `valve.openingPct`, which stayed inert under
+        // an explicitly selected Kv mode until `DefinedOpeningKvRelationShipType` was set first.
+        foreach (var gate in p.Gates ?? [])
+        {
+            var gp = so.GetType().GetProperty(gate.Property);
+            if (gp is null)
+            {
+                error("BUILD_FAILED", o.Tag,
+                    $"'{def.Type}' declares gate property '{gate.Property}' for '{p.Name}', " +
+                    "which this engine build does not expose.", null);
+                return;
+            }
+            // An enum gate is declared by MEMBER NAME — the ordinal differs per unit op and a shared
+            // integer is unsafe, which is research R1's hazard in this spec's vocabulary.
+            gp.SetValue(so, gp.PropertyType.IsEnum && gate.Value is string member
+                ? Enum.Parse(gp.PropertyType, member)
+                : Convert.ChangeType(gate.Value, gp.PropertyType));
+        }
+
         if (p.EngineProperties.Length > 0 && SetEngineProperty(so, p.EngineProperties, engineValue))
             return;
         // Fall back to DWSIM's generic property interface — but only when the object's own

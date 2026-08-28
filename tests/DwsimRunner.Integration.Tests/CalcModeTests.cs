@@ -168,3 +168,64 @@ public class CalcModeTests
         Assert.DoesNotContain("outletPressure", consumes);
     }
 }
+
+/// <summary>
+/// Spec 200 US2 — a value the engine reads only when a second property admits it.
+///
+/// 199 closed its D3 by measuring that `valve.openingPct` stays inert even with `kvGeneral` AND
+/// `kvGas` explicitly selected: 20% and 80% open both give 7.987199 bar. Selecting the mode is
+/// necessary and not sufficient — the valve also needs `DefinedOpeningKvRelationShipType`, which
+/// says HOW an opening maps to a Kv. `ParamDef` could not express that, so the parameter was
+/// declared, accepted, converged and ignored.
+///
+/// Phase 0 found the same shape three more times (`Reactor_PFR`, `HeatExchanger`, `Cooler`), which
+/// is why this is a mechanism rather than a special case.
+/// </summary>
+[Trait("Category", "CalcMode")]
+public class GatedValueTests
+{
+    private static string ValveDoc(string parameters) => $$"""
+    {
+      "schemaVersion": 1, "name": "200 gated value", "compounds": ["Nitrogen"], "propertyPackage": "PR",
+      "objects": [
+        { "tag": "IN1", "kind": "materialStream",
+          "spec": { "temperature": { "value": 80, "unit": "C" }, "pressure": { "value": 8, "unit": "bar" },
+                    "massFlow": { "value": 1000, "unit": "kg/h" },
+                    "composition": { "basis": "molar", "fractions": { "Nitrogen": 1 } } } },
+        { "tag": "V-1", "kind": "unitOp", "type": "valve", "parameters": {{parameters}} },
+        { "tag": "OUT", "kind": "materialStream" }
+      ],
+      "connections": [
+        { "from": "IN1", "to": "V-1", "port": "Inlet" },
+        { "from": "V-1", "to": "OUT", "port": "Outlet" }
+      ]
+    }
+    """;
+
+    private static async Task<double> OutletPressure(string parameters)
+    {
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve",
+            new StringContent($"{{\"document\":{ValveDoc(parameters)}}}", Encoding.UTF8, "application/json"));
+        var r = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        return r.GetProperty("streams").EnumerateArray()
+            .Single(s => s.GetProperty("name").GetString() == "OUT").GetProperty("pressureBar").GetDouble();
+    }
+
+    [SkippableFact]
+    public async Task A_valve_opening_moves_the_answer_once_its_gate_is_set()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        // 199 measured these identical at 7.987199 bar under every Kv mode. The gate is the
+        // difference, and this is the assertion that was impossible to make before it existed.
+        var open20 = await OutletPressure("""{"calcMode":"kvGeneral","kv":100,"openingPct":20}""");
+        var open80 = await OutletPressure("""{"calcMode":"kvGeneral","kv":100,"openingPct":80}""");
+
+        Assert.NotEqual(open20, open80);
+        // A more open valve restricts less, so it drops less pressure. Direction is physics, and
+        // asserting it stops a gate that "works" by scrambling the answer from passing.
+        Assert.True(open80 > open20,
+            $"an 80% open valve must drop less than a 20% one — got {open80} bar vs {open20} bar");
+    }
+}
