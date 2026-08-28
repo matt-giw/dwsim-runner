@@ -97,19 +97,46 @@ public sealed record UnitOpDef(string Type, string DisplayName, ObjectType Objec
 /// rule whose parameter is present wins. These are the seven pre-199 hatches, moved out of
 /// <c>FlowsheetBuilder</c> so that one file no longer holds both the rule and its exception.
 /// </param>
+/// <param name="Aliases">
+/// 200 US5 — enum members that are a SECOND NAME for a mode already in the list, mapped to the
+/// survivor. Offering both makes an engineer choose between identical outcomes.
+///
+/// Confirmed BEHAVIOURALLY and only with corroboration. `scripts/detect-mode-aliases.ts` solves a
+/// unit op under each pair of its modes at two input settings and compares envelopes; it reports
+/// four identical pairs and **three of them are artifacts of the probe baseline**, not aliases:
+/// `orificePlate` homogeneous/slip are two-phase correlations against a single-phase feed,
+/// `splitter` splitRatios/streamMassFlowSpec both send everything to the only piped outlet (its own
+/// probe comment says so), and `valve` kvGas/kvGeneral coincide on a GAS feed by construction.
+///
+/// Only `heater.heatAddedRemoved` is collapsed, and it has three independent sources: the harness,
+/// the IL (ordinals 0 and 5 jump to the same `Calculate` branch), and DWSIM's own GUI, which shows
+/// one item labelled "Heat Added/Removed" where the enum has two members.
+///
+/// **A false collapse deletes a real mode from the menu**, so identical-on-one-baseline is not
+/// enough. If a later run wants to collapse more, it needs a baseline that CAN discriminate, and
+/// showing that is harder than the measurement it enables.
+/// </param>
 public sealed record CalcModeDef(
     string ClrProperty,
     Type EnumType,
     string Default,
     string[] Always,
     Dictionary<string, string[]> Consumes,
-    (string Param, string Mode)[] Infer)
+    (string Param, string Mode)[] Infer,
+    Dictionary<string, string>? Aliases = null)
 {
-    /// <summary>Every mode the engine declares, in ordinal order, with its wire name.</summary>
+    /// <summary>Every mode the engine declares, in ordinal order, MINUS the aliases (200 US5).
+    /// The collapsed names are still resolvable — see <see cref="AliasOf"/> — so a document that
+    /// carries one gets an error naming its survivor rather than a silent nothing.</summary>
     public IEnumerable<(string Name, string EngineMember, int Ordinal)> Modes() =>
         Enum.GetValues(EnumType).Cast<object>()
             .Select(v => (UnitOpCatalog.NormalizeMode(v.ToString()!), v.ToString()!, (int)v))
+            .Where(t => Aliases is null || !Aliases.ContainsKey(t.Item1))
             .OrderBy(t => t.Item3);
+
+    /// <summary>If this wire name was collapsed, the mode it collapsed INTO. Null otherwise.</summary>
+    public string? AliasOf(string wireName) =>
+        Aliases is not null && Aliases.TryGetValue(wireName, out var survivor) ? survivor : null;
 
     /// <summary>Wire name → engine member, WITHIN this unit op. Never across.</summary>
     public bool TryResolve(string wireName, out string? engineMember)
@@ -242,7 +269,11 @@ public static class UnitOpCatalog
             ["heatAddedRemoved"] = ["heatDuty"],
         },
         Infer: [("outletTemperature", "outletTemperature"), ("temperatureChange", "temperatureChange"),
-                ("heatDuty", "heatAdded")]);
+                ("heatDuty", "heatAdded")],
+        // The one confirmed alias. Ordinal 5 jumps to ordinal 0's `Calculate` branch, the behavioural
+        // harness measures them identical at two settings, and DWSIM's GUI shows a single item
+        // labelled "Heat Added/Removed" where the enum has two members. A heater offers 5, not 6.
+        Aliases: new() { ["heatAddedRemoved"] = "heatAdded" });
 
     private static readonly CalcModeDef CoolerModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Cooler.CalculationMode),

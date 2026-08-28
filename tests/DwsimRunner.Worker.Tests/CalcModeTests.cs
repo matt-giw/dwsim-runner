@@ -37,14 +37,54 @@ public class CalcModeTests
     [Fact]
     public void Mode_values_come_from_the_engine_enum_and_are_never_hand_listed()
     {
+        // 200 US5 — advertised = the engine's members MINUS declared aliases, in ordinal order.
+        //
+        // The subtraction is the only thing allowed to shrink this, and it is not a hand-written
+        // list: an alias is a MEASURED claim that two members do the same thing, and the next test
+        // holds it to that. Everything else must still come from the enum, which is what stops the
+        // advertised set drifting into a curated one — DWSIM's own GUI is curated, and that is the
+        // difference this catalog exists to keep.
         foreach (var (wire, def) in ModeBearing())
         {
-            var fromEngine = Enum.GetNames(def.EnumType).Select(UnitOpCatalog.NormalizeMode).ToArray();
+            var expected = Enum.GetNames(def.EnumType).Select(UnitOpCatalog.NormalizeMode)
+                .Where(m => def.AliasOf(m) is null).ToArray();
             var advertised = def.Modes().Select(m => m.Name).ToArray();
-            Assert.True(fromEngine.SequenceEqual(advertised),
-                $"{wire}: the advertised modes must BE the engine's enum members, in ordinal order. " +
-                $"engine=[{string.Join(",", fromEngine)}] advertised=[{string.Join(",", advertised)}]");
+            Assert.True(expected.SequenceEqual(advertised),
+                $"{wire}: advertised modes must be the engine's members minus declared aliases, in " +
+                $"ordinal order. expected=[{string.Join(",", expected)}] advertised=[{string.Join(",", advertised)}]");
         }
+    }
+
+    [Fact]
+    public void Every_alias_names_a_mode_that_IS_advertised()
+    {
+        // A collapse that points at nothing removes a mode instead of merging it — the failure that
+        // costs a real capability, and the reason `detect-mode-aliases.ts` collapses one pair out of
+        // the four it measures identical (three are artifacts of the probe baseline, not aliases).
+        foreach (var (wire, def) in ModeBearing())
+        {
+            foreach (var (collapsed, survivor) in def.Aliases ?? [])
+            {
+                Assert.True(Enum.GetNames(def.EnumType).Select(UnitOpCatalog.NormalizeMode).Contains(collapsed),
+                    $"{wire}: '{collapsed}' is declared an alias and is not an engine member");
+                Assert.Contains(survivor, def.Modes().Select(m => m.Name));
+            }
+        }
+    }
+
+    [Fact]
+    public void The_heater_offers_five_modes_and_the_collapsed_one_still_resolves()
+    {
+        // The reported case: iskra showed 6 where DWSIM's GUI shows 4. One extra
+        // (`temperatureChange`) is REAL capability the vendor UI hides and stays; the other was a
+        // second name for `heatAdded` and goes.
+        var heater = UnitOpCatalog.Types["heater"].CalcMode!;
+        Assert.Equal(5, heater.Modes().Count());
+        Assert.Contains("temperatureChange", heater.Modes().Select(m => m.Name));
+        Assert.DoesNotContain("heatAddedRemoved", heater.Modes().Select(m => m.Name));
+        // Still recognised, so a document carrying it gets an error naming the survivor rather than
+        // "unknown mode" (FR-006b).
+        Assert.Equal("heatAdded", heater.AliasOf("heatAddedRemoved"));
     }
 
     [Fact]

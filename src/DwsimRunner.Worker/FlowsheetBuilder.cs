@@ -444,6 +444,18 @@ public static class FlowsheetBuilder
         {
             wire = entry.Value.GetString();
             isExplicit = true;
+            // 200 FR-006b — a COLLAPSED name is refused by pointing at its survivor. Without the
+            // survivor it is a dead end; with it, it is an instruction. Refusing rather than
+            // silently mapping is deliberate (clarified 2026-08-27): the app stops offering the name
+            // the moment this ships, so the only documents that can carry it were saved in the
+            // window between 199 merging and this landing.
+            if (cm.AliasOf(wire!) is { } survivor)
+            {
+                error("UNKNOWN_CALC_MODE", o.Tag,
+                    $"'{wire}' was a second name for '{survivor}' on '{def.Type}' and does the same " +
+                    $"thing — use '{survivor}'.", null);
+                return (null, false);
+            }
             if (!cm.TryResolve(wire!, out _))
             {
                 // Name the alternatives, not just the failure. Spec 138 measured that the model
