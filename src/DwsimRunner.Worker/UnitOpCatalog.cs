@@ -123,7 +123,8 @@ public sealed record CalcModeDef(
     string[] Always,
     Dictionary<string, string[]> Consumes,
     (string Param, string Mode)[] Infer,
-    Dictionary<string, string>? Aliases = null)
+    Dictionary<string, string>? Aliases = null,
+    Dictionary<string, string>? Undrivable = null)
 {
     /// <summary>Every mode the engine declares, in ordinal order, MINUS the aliases (200 US5).
     /// The collapsed names are still resolvable — see <see cref="AliasOf"/> — so a document that
@@ -137,6 +138,19 @@ public sealed record CalcModeDef(
     /// <summary>If this wire name was collapsed, the mode it collapsed INTO. Null otherwise.</summary>
     public string? AliasOf(string wireName) =>
         Aliases is not null && Aliases.TryGetValue(wireName, out var survivor) ? survivor : null;
+
+    /// <summary>
+    /// 200 US3 (FR-003) — why this mode cannot be driven, or null if it can.
+    ///
+    /// Declared as the EXCEPTIONS: a mode is drivable unless something says otherwise, so adding a
+    /// setpoint makes its mode work without anyone remembering to flip a second flag.
+    ///
+    /// A mode with no setpoint is NOT undrivable by that fact alone. A reactor running adiabatic and
+    /// a separator flashing isothermically are operating REGIMES, where selecting the mode IS the
+    /// whole specification — which is why the reactors and the separator declare nothing here.
+    /// </summary>
+    public string? UndrivableBecause(string wireName) =>
+        Undrivable is not null && Undrivable.TryGetValue(wireName, out var why) ? why : null;
 
     /// <summary>Wire name → engine member, WITHIN this unit op. Never across.</summary>
     public bool TryResolve(string wireName, out string? engineMember)
@@ -198,7 +212,8 @@ public static class UnitOpCatalog
         // catalog declared it, the engine constructed in Delta_P, and the value was accepted and
         // ignored. Inferring it is new behaviour and it is the FIX, not a regression — a document
         // that sets only `outletPressure` currently gets a silently wrong answer.
-        Infer: [("power", "power"), ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")]);
+        Infer: [("power", "power"), ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")],
+        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode", ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
 
     private static readonly CalcModeDef CompressorModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Compressor.CalculationMode),
@@ -218,7 +233,8 @@ public static class UnitOpCatalog
         // that reads it. Ordered most-specific first; the first rule whose parameter is present wins.
         Infer: [("pressureRatio", "pressureRatio"), ("head", "head"),
                 ("powerRequired", "powerRequired"),
-                ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")]);
+                ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")],
+        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode", ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
 
     private static readonly CalcModeDef ExpanderModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Expander.CalculationMode),
@@ -230,7 +246,8 @@ public static class UnitOpCatalog
         },
         Infer: [("pressureRatio", "pressureRatio"), ("head", "head"),
                 ("powerGenerated", "powerGenerated"),
-                ("pressureDecrease", "deltaP"), ("outletPressure", "outletPressure")]);
+                ("pressureDecrease", "deltaP"), ("outletPressure", "outletPressure")],
+        Undrivable: new() { ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
 
     private static readonly CalcModeDef ValveModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Valve.CalculationMode),
@@ -273,7 +290,10 @@ public static class UnitOpCatalog
         // The one confirmed alias. Ordinal 5 jumps to ordinal 0's `Calculate` branch, the behavioural
         // harness measures them identical at two settings, and DWSIM's GUI shows a single item
         // labelled "Heat Added/Removed" where the enum has two members. A heater offers 5, not 6.
-        Aliases: new() { ["heatAddedRemoved"] = "heatAdded" });
+        Aliases: new() { ["heatAddedRemoved"] = "heatAdded" },
+        // Two causes, two sentences. `outletVaporFraction` is on the HEATER's enum and the property
+        // is on the COOLER's class only — the catalog has recorded that asymmetry since 099.
+        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode", ["outletVaporFraction"] = "this unit op has no such input — the mode is on the engine's enum and the property is not on the class" });
 
     private static readonly CalcModeDef CoolerModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Cooler.CalculationMode),
@@ -289,7 +309,8 @@ public static class UnitOpCatalog
         // `outletVaporFraction` was the sixth hatch and only the COOLER declares the parameter,
         // so only the cooler carries the rule.
         Infer: [("outletTemperature", "outletTemperature"), ("outletVaporFraction", "outletVaporFraction"),
-                ("temperatureChange", "temperatureChange"), ("heatDuty", "heatRemoved")]);
+                ("temperatureChange", "temperatureChange"), ("heatDuty", "heatRemoved")],
+        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode" });
 
     // 166 — the runner forces Adiabatic at creation because DWSIM constructs in Legacy, whose
     // mixed-feed (T,P) flash is ill-posed for a pure compound on the saturation line. So iskra's
@@ -329,7 +350,8 @@ public static class UnitOpCatalog
             ["outletTemperature"] = hasOutletTemperature ? ["outletTemperature"] : [],
             ["nonIsothermalNonAdiabatic"] = [],
         },
-        Infer: hasOutletTemperature ? [("outletTemperature", "outletTemperature")] : []);
+        Infer: hasOutletTemperature ? [("outletTemperature", "outletTemperature")] : [],
+        Undrivable: hasOutletTemperature ? null : new() { ["outletTemperature"] = "this unit op has no such input — the mode is on the engine's enum and the property is not on the class" });
 
     private static readonly CalcModeDef SplitterModes = new(
         "OperationMode", typeof(DWSIM.UnitOperations.UnitOperations.Splitter.OpMode),
@@ -737,6 +759,11 @@ public static class UnitOpCatalog
                             .Concat(cm.Consumes.TryGetValue(m.Name, out var only) ? only : [])
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .OrderBy(x => x, StringComparer.Ordinal).ToArray(),
+                        // 200 US3 — null when the mode can be driven. A non-null reason is rendered
+                        // beside a mode the app will not let you select, so the menu stays a
+                        // faithful picture of the engine: a hidden mode is indistinguishable from
+                        // one iskra forgot to implement.
+                        undrivableBecause = cm.UndrivableBecause(m.Name),
                     }),
                 };
             return row;
