@@ -634,7 +634,22 @@ public static class UnitOpCatalog
             [In("Inlet", 0), Out("Outlet", 0), EnergyIn("Energy Inlet", 1)],
             [P("calcMode", "string", false, "__calcMode"),
              P("volume", "volume", false, "Volume"),
-             P("length", "length", false, "Length")], true, CalcMode: ReactorModes(["volume", "length"], hasOutletTemperature: false)),
+             P("length", "length", false, "Length")
+             // 200 US4 — MEASURED AND NOT BOUND. `Diameter`, `CatalystLoading` and `ResidenceTime`
+             // are all settable on `Reactor_PFR`, and all three measured **inert** (2026-08-27,
+             // against the WGS kinetic baseline that `volume` and `length` both move).
+             //
+             // Why, and it is the same reason three times: they are not independent of what is
+             // already bound. `Volume` and `Length` fix the reacting volume, so `Diameter` is
+             // derivable rather than read; `ResidenceTime` is volume over flow, which is a READOUT
+             // the solve computes — exactly the risk flagged before probing; and `CatalystLoading`
+             // is a heterogeneous-catalysis quantity that a homogeneous kinetic reaction never
+             // consults.
+             //
+             // FR-001: a parameter that measures inert ships a recorded refusal, not a binding.
+             // Binding them would have added three knobs an engineer can turn with no effect —
+             // which is the exact defect specs 199 and 200 exist to remove.
+             ], true, CalcMode: ReactorModes(["volume", "length"], hasOutletTemperature: false)),
 
         // 141 US5 (FR-010): both columns' energy ports are `required: true` because that is what
         // the ENGINE enforces — without them BaseClass.Validate refuses with the opaque "Check
