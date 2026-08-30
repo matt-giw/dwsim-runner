@@ -121,7 +121,17 @@ internal static class ElectrolyzerConfigurator
         return DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI(unit, value);
     }
 
-    private static void SetEnergyFlow(ISimulationObject es, double kw)
+    /// <summary>
+    /// Set an energy stream's duty, in kW.
+    ///
+    /// 203 — PROMOTED to internal. This was private to the electrolyzer, which synthesizes a stream
+    /// from a `powerInput` parameter because the engine takes power as a stream rather than a
+    /// parameter (099 US1). An AUTHORED energy stream needs exactly the same write, and the comment
+    /// at its one call site already said why they must share it: *"a synthesized stream and an
+    /// authored one cannot mean different things by the same number."* This is that sentence
+    /// enforced by there being one function.
+    /// </summary>
+    internal static void SetEnergyFlow(ISimulationObject es, double kw)
     {
         var prop = es.GetType().GetProperty("EnergyFlow");
         if (prop is not null && prop.CanWrite) prop.SetValue(es, kw);

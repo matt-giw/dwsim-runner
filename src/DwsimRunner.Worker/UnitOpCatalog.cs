@@ -213,7 +213,7 @@ public static class UnitOpCatalog
         // ignored. Inferring it is new behaviour and it is the FIX, not a regression — a document
         // that sets only `outletPressure` currently gets a silently wrong answer.
         Infer: [("power", "power"), ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")],
-        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode", ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
+        Undrivable: new() { ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
 
     private static readonly CalcModeDef CompressorModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Compressor.CalculationMode),
@@ -234,7 +234,7 @@ public static class UnitOpCatalog
         Infer: [("pressureRatio", "pressureRatio"), ("head", "head"),
                 ("powerRequired", "powerRequired"),
                 ("pressureIncrease", "deltaP"), ("outletPressure", "outletPressure")],
-        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode", ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
+        Undrivable: new() { ["curves"] = "a performance curve cannot be stated yet: the engine takes a serialized curve and iskra has no way to author one" });
 
     private static readonly CalcModeDef ExpanderModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Expander.CalculationMode),
@@ -293,7 +293,7 @@ public static class UnitOpCatalog
         Aliases: new() { ["heatAddedRemoved"] = "heatAdded" },
         // Two causes, two sentences. `outletVaporFraction` is on the HEATER's enum and the property
         // is on the COOLER's class only — the catalog has recorded that asymmetry since 099.
-        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode", ["outletVaporFraction"] = "this unit op has no such input — the mode is on the engine's enum and the property is not on the class" });
+        Undrivable: new() { ["outletVaporFraction"] = "this unit op has no such input — the mode is on the engine's enum and the property is not on the class" });
 
     private static readonly CalcModeDef CoolerModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Cooler.CalculationMode),
@@ -309,8 +309,7 @@ public static class UnitOpCatalog
         // `outletVaporFraction` was the sixth hatch and only the COOLER declares the parameter,
         // so only the cooler carries the rule.
         Infer: [("outletTemperature", "outletTemperature"), ("outletVaporFraction", "outletVaporFraction"),
-                ("temperatureChange", "temperatureChange"), ("heatDuty", "heatRemoved")],
-        Undrivable: new() { ["energyStream"] = "connect an energy stream to this unit to use this mode" });
+                ("temperatureChange", "temperatureChange"), ("heatDuty", "heatRemoved")]);
 
     // 166 — the runner forces Adiabatic at creation because DWSIM constructs in Legacy, whose
     // mixed-feed (T,P) flash is ill-posed for a pure compound on the saturation line. So iskra's

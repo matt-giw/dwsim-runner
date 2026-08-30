@@ -28,8 +28,18 @@ public sealed record FlowObject(string Tag, string Kind, string? Type,
 public sealed record FlowPosition(int X, int Y);
 public sealed record FlowQuantity(double Value, string? Unit);
 public sealed record FlowComposition(string? Basis, Dictionary<string, double> Fractions);
+/// <param name="Duty">
+/// 203 — an ENERGY stream's duty, in kW by default. The only member of this record that belongs to a
+/// stream with no temperature, pressure, flow or composition: an energy stream has none of those (it
+/// is a duty), which is why the mapper pushed it as a bare object until now.
+///
+/// Stating it is what makes a unit op's `energyStream` calculation mode drivable — that mode reads
+/// the unit's duty FROM the connected stream, and before this there was nothing on the stream to
+/// read. Spec 200 shipped the mode greyed for that reason.
+/// </param>
 public sealed record FlowStreamSpec(FlowQuantity? Temperature, FlowQuantity? Pressure, FlowQuantity? Enthalpy,
-    FlowQuantity? MassFlow, FlowQuantity? MolarFlow, FlowQuantity? VolumetricFlow, FlowComposition? Composition);
+    FlowQuantity? MassFlow, FlowQuantity? MolarFlow, FlowQuantity? VolumetricFlow, FlowComposition? Composition,
+    FlowQuantity? Duty = null);
 public sealed record FlowConnection(string From, string To, string Port);
 public sealed record FlowReaction(string Tag, string Type, string? Basis, Dictionary<string, double> Stoichiometry,
     string BaseCompound, string? Phase, string? ConversionExpression,
@@ -237,6 +247,24 @@ public static class FlowsheetBuilder
             {
                 Error("BUILD_FAILED", unitDoc.Tag,
                     $"cannot connect '{streamDoc.Tag}' to '{unitDoc.Tag}' port '{port.Name}': {ex.Message}");
+            }
+        }
+
+        // ── energy-stream duties (203) ─────────────────────────────────────
+        // Separate loop from the material one below, because an energy stream shares none of its
+        // fields: `IMaterialStream` is the wrong interface and every setter there would be wrong.
+        foreach (var o in doc.Objects.Where(o => o.Kind == "energyStream" && o.Spec?.Duty is not null))
+        {
+            if (!byTag.TryGetValue(o.Tag, out var so)) continue;
+            try
+            {
+                // kW, through the same helper the electrolyzer's synthesized stream uses — one
+                // function so a synthesized and an authored duty cannot mean different things.
+                ElectrolyzerConfigurator.SetEnergyFlow(so, ToSi(o.Spec!.Duty!, "kW"));
+            }
+            catch (Exception ex)
+            {
+                Error("INVALID_PARAMETER_VALUE", o.Tag, $"cannot set duty on '{o.Tag}': {ex.Message}");
             }
         }
 
