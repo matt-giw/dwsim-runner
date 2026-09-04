@@ -120,21 +120,35 @@ public class UnitRefusalTests
         AssertNamedRefusal(await ReadError(resp), "kJ/kilogram");
     }
 
-    // `entropy` has NO measured vocabulary on this runner — `DocumentValidator.Units` has no such
-    // key. Guessing one is the defect this whole file is about, so any unit is refused and the
-    // caller is told to send a bare SI value. The gap is recorded, not papered over.
+    // `entropy` carries exactly ONE spelling, and the reason it can be admitted without a live
+    // probe is that it is the SI one — `ConvertToSI("kJ/[kg.K]", s)` is the identity whether or not
+    // the converter recognises it. Any OTHER entropy spelling is a real conversion and is refused
+    // until something measures it.
     [Fact]
-    public async Task Flash_ps_refuses_any_entropy_unit_because_no_vocabulary_is_measured()
+    public async Task Flash_ps_accepts_the_si_entropy_spelling_the_platform_actually_sends()
     {
         using var host = new RunnerHost();
 
         var resp = await host.Client.PostAsJsonAsync("/flash", Flash("PS",
             ("pressure", new { value = 1.0, unit = "bar" }),
-            ("entropy", new { value = 1.3, unit = "kJ/[kg.K]" })));
+            ("entropy", new { value = -1.0, unit = "kJ/[kg.K]" })));
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Flash_ps_refuses_an_entropy_spelling_that_would_be_a_real_conversion()
+    {
+        using var host = new RunnerHost();
+
+        var resp = await host.Client.PostAsJsonAsync("/flash", Flash("PS",
+            ("pressure", new { value = 1.0, unit = "bar" }),
+            ("entropy", new { value = 0.31, unit = "BTU/[lb.R]" })));
 
         var got = await ReadError(resp);
-        AssertNamedRefusal(got, "kJ/[kg.K]");
-        Assert.Contains("no accepted unit vocabulary", got.Message, StringComparison.Ordinal);
+        AssertNamedRefusal(got, "BTU/[lb.R]");
+        // Pre-213 this read as kJ/kg.K and converged — a 4.19x error wearing a result.
+        Assert.Contains("kJ/[kg.K]", got.Message, StringComparison.Ordinal);
     }
 
     // A dimensionless field carrying a unit is not a harmless extra key: `RequireSi` hands it to
@@ -364,11 +378,13 @@ public class UnitRefusalTests
         }
     }
 
+    // The branch that exists so a future quantity cannot be added to an endpoint and silently
+    // inherit the SI fallback: a kind with no vocabulary refuses rather than converting.
     [Fact]
-    public void An_unmeasured_quantity_kind_refuses_rather_than_guessing_a_vocabulary()
+    public void A_kind_with_no_vocabulary_refuses_rather_than_guessing_one()
     {
-        Assert.DoesNotContain("entropy", DocumentValidator.UnitVocabulary.Keys);
-        var refusal = DocumentValidator.UnitRefusal("entropy.unit", "kJ/[kg.K]", "entropy");
+        Assert.DoesNotContain("fugacity", DocumentValidator.UnitVocabulary.Keys);
+        var refusal = DocumentValidator.UnitRefusal("fugacity.unit", "atm", "fugacity");
         Assert.NotNull(refusal);
         Assert.Contains("no accepted unit vocabulary", refusal, StringComparison.Ordinal);
     }

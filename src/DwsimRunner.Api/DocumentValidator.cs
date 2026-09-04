@@ -70,6 +70,20 @@ public static class DocumentValidator
         ["molarFlow"] = ["kmol/h", "kmol/s", "mol/s", "mol/h", "lbmol/h"],
         ["volumetricFlow"] = ["m3/h", "m3/s", "L/min", "L/s", "L/h", "ft3/s"],
         ["enthalpy"] = ["kJ/kg", "J/kg", "BTU/lb"],
+        // 213. Reachable via a PS flash and previously unguarded, so `BTU/[lb.R]` on an entropy
+        // spec read as kJ/kg.K and converged. ONE spelling, and the reason it can be admitted
+        // without a live probe is that it is the SI one: `Modes.cs` declares this quantity's SI
+        // unit as kJ/kg.K, so `ConvertToSI("kJ/[kg.K]", s)` is the IDENTITY under both hypotheses
+        // — whether the converter knows the spelling or silently passes it through, the number is
+        // the same. That is the whole argument, and it does not extend one entry further.
+        //
+        // Every OTHER entropy spelling is refused pending a probe that can actually discriminate.
+        // Note the trap this list is built to avoid: the platform's own PS round-trip check
+        // (`capture-capability.ts`) flashes TP for `s` and re-flashes PS with it, so it lands near
+        // the reference whether or not the spelling was recognised — the acceptance criterion is
+        // insensitive to the very defect it would need to detect. Spec 147's `TVF` finding, third
+        // occurrence.
+        ["entropy"] = ["kJ/[kg.K]"],
         ["power"] = ["kW", "W", "MW", "hp"],
         // Every spelling here is one DWSIM's own `Converter.ConvertToSI` accepts — read off the
         // literals in DWSIM.SharedClasses, not guessed. A unit this table admits and the converter
