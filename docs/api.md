@@ -11,14 +11,39 @@ commit anywhere else. The `specs/*/contracts/*.md` files in the iskra monorepo a
 they and this file disagree, this file is the live one, and the source is the authority
 over both.
 
-Verified against `src/DwsimRunner.Api/Program.cs` @ `a41cf15`.
-
 - Base URL: `http://localhost:8080` (the process binds `0.0.0.0:8080`, hardcoded).
 - All request and response bodies are JSON, **camelCase**, unless a route says binary.
 - There is no API versioning and no `/v1` prefix.
 
+## The machine-readable spec
+
+| | Path |
+|---|---|
+| **OpenAPI 3.0 document** | `/openapi.json` |
+| **Swagger UI** — browsable, with try-it | `/docs` |
+
+Both are **generated from the endpoint definitions**, so they cannot drift from the routes: request
+schemas are the types the handlers bind, and every path, status code and field description comes
+from the code that serves it. Use the spec for client generation and the UI for exploring; use this
+file for what a schema cannot state — the caching rules, the queueing behaviour, and the few places
+where the engine accepts something and is quietly wrong about it.
+
+Both paths stay **open even when `RUNNER_API_KEY` is set**, exactly like `/health`. Swagger UI's
+first act is an unauthenticated fetch of the spec, before its Authorize button exists to carry a
+key, so gating them would make the UI unusable rather than secure — an API description is not API
+data. `DOCS_ENABLED=false` removes both entirely.
+
+The UI's **Authorize** button attaches `X-Api-Key` to try-it calls. Whether the key is *enforced*
+depends on the server setting `RUNNER_API_KEY`; the document declares the scheme either way,
+because the document is static and that setting is not.
+
+One limit worth knowing: response bodies are produced by the worker process and passed through as
+bytes, so response schemas are **declared** rather than bound — see
+[Keeping this file honest](#keeping-this-file-honest) for what stops a declaration drifting.
+
 ## Contents
 
+- [The machine-readable spec](#the-machine-readable-spec) — `/openapi.json` and `/docs`
 - [Auth](#auth) · [Conventions](#conventions) · [Error taxonomy](#error-taxonomy)
 - [Solve lifecycle](#solve-lifecycle-timeouts-queueing-caching) — timeouts, queueing, **caching**
 - Routes: [health & templates](#health--templates) · [catalog](#catalog) ·
@@ -579,7 +604,28 @@ DWSIM, so it pins routing, the error taxonomy, auth, the cache and the queue cap
 dotnet test tests/DwsimRunner.Api.Tests
 ```
 
-Those tests are the executable half of this document. Where a claim here is behavioural rather than
-structural — the `TVF` insensitivity, the cache replaying a non-convergence — it was measured
-against a live engine and is cited to the spec that measured it. If you change a route, change this
-file in the same commit; it is in this repo so that is possible.
+`OpenApiContractTests.cs` is what keeps the generated document from lying. A spec generated from
+code is only worth more than prose if it cannot quietly disagree with the service, and there are
+three ways it could:
+
+1. **A new route lands with no metadata.** Swashbuckle would list it with no summary and no
+   response schema — present in the document, describing nothing. Every operation is asserted to
+   carry a summary and a 2xx body, and the path list is checked in *both* directions, so an
+   undocumented new route fails the build instead of appearing blank.
+2. **A field description silently vanishes.** `///` comments written *inside* a record's parameter
+   list compile with a CS1587 warning and are **discarded** — the source reads as documented and
+   the document comes out bare. That happened while this was being written, which is why a known
+   description is pinned rather than trusted.
+3. **A response record drifts from what the worker sends.** Response bodies are worker
+   pass-through, so nothing at runtime would ever notice a field the schema fails to name. Real
+   worker output is round-tripped through each declared record and any dropped field fails.
+
+Response schemas are declared rather than bound **on purpose**: if the API deserialized results
+into its own records and re-serialized them, any field the worker later learned to emit would be
+silently stripped on the way out, and the two processes would have to be upgraded in lockstep.
+`solvingMethod` (spec 143) and the per-phase blocks (spec 120) both arrived exactly that way.
+
+Where a claim here is behavioural rather than structural — the `TVF` insensitivity, the cache
+replaying a non-convergence — it was measured against a live engine and is cited to the spec that
+measured it. Those are the claims the generated document cannot make, and the reason this file
+exists alongside it.

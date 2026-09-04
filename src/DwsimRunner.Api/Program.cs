@@ -13,6 +13,61 @@ using DwsimRunner.Api;
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
+
+// OpenAPI (ISK-231). The document is generated from endpoint metadata, so it describes the
+// routes this file actually registers rather than a hand-written second opinion about them.
+// Response bodies stay worker pass-through at runtime — see Contracts.cs for why declaring
+// them beats binding them, and OpenApiContractTests for what stops a declaration drifting.
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(o =>
+{
+    // Named "openapi" so UseSwagger's "{documentName}.json" template serves it at /openapi.json.
+    o.SwaggerDoc("openapi", new Microsoft.OpenApi.Models.OpenApiInfo
+    {
+        Title = "dwsim-runner",
+        Version = "v1",
+        Description =
+            "Headless DWSIM solve service.\n\n"
+            + "**Every route is synchronous** — there are no jobs, no polling and no callbacks. A solve "
+            + "holds the connection and is bounded by a timeout, not by a job id.\n\n"
+            + "**Non-convergence is not an error**: a flowsheet that fails to converge is `200 OK` with "
+            + "`converged: false`. Reserve HTTP failure for \"we could not run your request\".\n\n"
+            + "**Results are cached.** Document-scoped results are cached even when they did not converge, "
+            + "so a repeated request replays the same failure in ~0 ms and `elapsedMs` is the original "
+            + "solve's figure. Restart the service before benchmarking anything.\n\n"
+            + "Narrative reference, including the caching and queueing rules in full: `docs/api.md`.",
+        License = new Microsoft.OpenApi.Models.OpenApiLicense { Name = "GPL-3.0" },
+    });
+
+    // Declared so the UI's Authorize button can attach the header to try-it calls. Whether it is
+    // actually enforced depends on RUNNER_API_KEY being set — described in the scheme text rather
+    // than asserted here, because this document is static and that setting is not.
+    o.AddSecurityDefinition("ApiKey", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    {
+        Name = "X-Api-Key",
+        Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey,
+        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+        Description =
+            "Required on every route except GET /health, /openapi.json and /docs — but ONLY when the "
+            + "server sets RUNNER_API_KEY. Unset means every route is open (local dev). Clients read "
+            + "the value from SIM_RUNNER_API_KEY.",
+    });
+    o.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+    {
+        [new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+        {
+            Reference = new Microsoft.OpenApi.Models.OpenApiReference
+            {
+                Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                Id = "ApiKey",
+            },
+        }] = Array.Empty<string>(),
+    });
+
+    var xml = Path.Combine(AppContext.BaseDirectory, "DwsimRunner.Api.xml");
+    if (File.Exists(xml)) o.IncludeXmlComments(xml, includeControllerXmlComments: true);
+});
+
 var app = builder.Build();
 
 // Settings come from IConfiguration (env vars in production; in-memory
@@ -58,12 +113,20 @@ var templateIdPattern = new Regex("^[A-Za-z0-9._-]+$", RegexOptions.Compiled);
 // Optional shared API key (FR-016): set RUNNER_API_KEY and every route except
 // GET /health requires X-Api-Key. Unset = open (local dev). User-level
 // authn/authz stays in the consuming platform.
+// The API DESCRIPTION is not API data, and gating it makes the browser UI unusable — Swagger UI's
+// first act is an unauthenticated fetch of the spec, before the Authorize button exists to carry a
+// key. So /openapi.json and /docs join /health as open, and DOCS_ENABLED=false removes them
+// entirely for a deployment that does not want its surface published at all.
+bool docsEnabled = !string.Equals(Cfg("DOCS_ENABLED", "true"), "false", StringComparison.OrdinalIgnoreCase);
+static bool IsDocsPath(PathString p) =>
+    p.StartsWithSegments("/openapi.json") || p.StartsWithSegments("/docs");
+
 if (app.Configuration["RUNNER_API_KEY"] is { Length: > 0 } apiKey)
 {
     var keyBytes = System.Text.Encoding.UTF8.GetBytes(apiKey);
     app.Use(async (ctx, next) =>
     {
-        if (ctx.Request.Path == "/health") { await next(); return; }
+        if (ctx.Request.Path == "/health" || IsDocsPath(ctx.Request.Path)) { await next(); return; }
 
         var presented = ctx.Request.Headers["X-Api-Key"].ToString();
         var ok = presented.Length > 0 && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
@@ -76,6 +139,40 @@ if (app.Configuration["RUNNER_API_KEY"] is { Length: > 0 } apiKey)
             return;
         }
         await next();
+    });
+}
+
+// A malformed body fails in the MODEL BINDER, before the handler runs, so the framework's default
+// 400 (an empty body, or ProblemDetails) escapes instead of the taxonomy's { error, message }.
+// That was already the case for the routes binding a request record — /solve, /compare, /optimize —
+// while the hand-parsed ones answered INVALID_REQUEST: one API with two shapes for one mistake,
+// and only the hand-parsed half had a test. Catching it here makes every route answer the same way,
+// which is what let the remaining handlers move off JsonDocument parsing (ISK-231).
+app.Use(async (ctx, next) =>
+{
+    try { await next(); }
+    catch (BadHttpRequestException)
+    {
+        if (ctx.Response.HasStarted) throw;
+        ctx.Response.Clear();
+        ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(ErrorBody("INVALID_REQUEST", "request body must be JSON"));
+    }
+});
+
+if (docsEnabled)
+{
+    // The document is NAMED "openapi" so this template serves it at /openapi.json. Do not add a
+    // separate MapGet for that path: this middleware matches {documentName}.json first, would
+    // resolve documentName to "openapi", and 404s on an unknown document before any endpoint runs.
+    app.UseSwagger(o => o.RouteTemplate = "{documentName}.json");
+
+    app.UseSwaggerUI(o =>
+    {
+        o.SwaggerEndpoint("/openapi.json", "dwsim-runner v1");
+        o.RoutePrefix = "docs";
+        o.DocumentTitle = "dwsim-runner API";
     });
 }
 
@@ -128,7 +225,11 @@ app.MapGet("/health", () =>
             $"DWSIM not found at '{dwsimPath}'. Install DWSIM (https://dwsim.org) and set DWSIM_PATH " +
             "to its install directory (on-prem: mount the install at /opt/dwsim).",
     });
-});
+})
+    .WithTags("Health")
+    .WithSummary("Readiness, engine identity and templates in one call.")
+    .WithDescription("The only route never gated by RUNNER_API_KEY.")
+    .Produces<HealthResponse>(StatusCodes.Status200OK);
 
 // /health keeps the bare-id readiness array (curated only, spec-001 contract);
 // GET /templates is the object-shaped listing (runner-api-v2.md).
@@ -146,7 +247,11 @@ app.MapGet("/templates", () => Results.Ok(userTemplates.List().Select(t => new
     source = t.Source,
     createdUtc = t.CreatedUtc,
     solvedAtSave = t.SolvedAtSave,
-})));
+})))
+    .WithTags("Templates")
+    .WithSummary("List every template, curated and user-saved.")
+    .WithDescription("The templates array on /health is curated ids only; this is the complete list.")
+    .Produces<List<TemplateListItem>>(StatusCodes.Status200OK);
 
 app.MapDelete("/templates/{id}", (string id) =>
 {
@@ -162,7 +267,14 @@ app.MapDelete("/templates/{id}", (string id) =>
     // and ResolveTemplate 404s before any cache lookup once the file is gone.
     userTemplates.Delete(id);
     return Results.NoContent();
-});
+})
+    .WithTags("Templates")
+    .WithSummary("Delete a user template.")
+    .WithDescription("User templates only. A curated id is 403 TEMPLATE_READONLY, never a silent no-op.")
+    .Produces(StatusCodes.Status204NoContent)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status403Forbidden)
+    .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
 
 // GET /templates/{id}/file — stream the .dwxmz bytes (spec 011 Cut 3, D2 option a).
 // The iskra-app uses this to pull a freshly-saved user template into its Postgres
@@ -183,17 +295,43 @@ app.MapGet("/templates/{id}/file", (string id) =>
         return ErrorResult(StatusCodes.Status404NotFound, "TEMPLATE_NOT_FOUND", $"unknown template '{id}'");
     var bytes = File.ReadAllBytes(path);
     return Results.File(bytes, "application/octet-stream", $"{id}.dwxmz");
-});
+})
+    .WithTags("Templates")
+    .WithSummary("Download a template as raw .dwxmz bytes.")
+    .WithDescription("Works for curated and user templates. Used to pull a saved flowsheet into a caller-side store.")
+    .Produces(StatusCodes.Status200OK, typeof(byte[]), "application/octet-stream")
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
 
 // ── engine catalog (002: FR-CAT-001..004) ──────────────────────────────────
 
-app.MapGet("/catalog/compounds", (CancellationToken ct) => CatalogSection("compounds", ct));
-app.MapGet("/catalog/property-packages", (CancellationToken ct) => CatalogSection("propertyPackages", ct));
-app.MapGet("/catalog/unit-op-types", (CancellationToken ct) => CatalogSection("unitOpTypes", ct));
+app.MapGet("/catalog/compounds", (CancellationToken ct) => CatalogSection("compounds", ct))
+    .WithTags("Catalog")
+    .WithSummary("Compounds this engine can resolve by name.")
+    .WithDescription("Cached per engine version. The source for the compounds array of a document.")
+    .Produces<CompoundsResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status503ServiceUnavailable);
+app.MapGet("/catalog/property-packages", (CancellationToken ct) => CatalogSection("propertyPackages", ct))
+    .WithTags("Catalog")
+    .WithSummary("Thermodynamic property packages this engine offers.")
+    .WithDescription("The source for propertyPackage. Note that ids and display names differ.")
+    .Produces<PropertyPackagesResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status503ServiceUnavailable);
+app.MapGet("/catalog/unit-op-types", (CancellationToken ct) => CatalogSection("unitOpTypes", ct))
+    .WithTags("Catalog")
+    .WithSummary("Port and parameter schema per unit-op wire type.")
+    .WithDescription("The source for legal type, port and parameters names in a document. Do not hardcode them.")
+    .Produces<UnitOpTypesResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status503ServiceUnavailable);
 // 099 FR-001 / 034 FR-020 — what the ENGINE declares, versus what this runner exposes. A section of
 // the already version-keyed catalog payload, so it inherits its cache: no new worker mode, no second
 // cache to go stale against the first.
-app.MapGet("/catalog/engine-inventory", (CancellationToken ct) => CatalogSection("engineInventory", ct));
+app.MapGet("/catalog/engine-inventory", (CancellationToken ct) => CatalogSection("engineInventory", ct))
+    .WithTags("Catalog")
+    .WithSummary("What the ENGINE declares, versus what this runner exposes.")
+    .WithDescription("An exposedAs of null means DWSIM has the unit op and this runner has no wire type for it.")
+    .Produces<EngineInventoryResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status503ServiceUnavailable);
 // The unit vocabulary this runner ACCEPTS. Served straight from `DocumentValidator` rather than
 // through the worker catalog, because that dictionary is the thing that accepts or rejects a unit —
 // anything else would be a second opinion about the first — and the worker cannot see this assembly.
@@ -205,7 +343,11 @@ app.MapGet("/catalog/units", () =>
 {
     var (_, probedVersion, _) = ProbeDwsim();
     return Results.Json(new { engineVersion = probedVersion, units = DocumentValidator.UnitVocabulary });
-});
+})
+    .WithTags("Catalog")
+    .WithSummary("The unit vocabulary this runner accepts.")
+    .WithDescription("Served from the dictionary that does the accepting, so a client copy can be checked rather than trusted. Available even when the engine is not.")
+    .Produces<UnitsResponse>(StatusCodes.Status200OK);
 
 async Task<IResult> CatalogSection(string section, CancellationToken ct)
 {
@@ -287,23 +429,12 @@ async Task<CatalogModel> GetCatalogModelAsync(CancellationToken ct)
     return catalogModel ?? throw new InvalidOperationException("catalog parsed but the model is empty");
 }
 
-app.MapPost("/flowsheets/validate", async (HttpContext http, CancellationToken ct) =>
+app.MapPost("/flowsheets/validate", async (ValidateRequest req, HttpContext http, CancellationToken ct) =>
 {
-    // Body shape: { document, semantic: true }
-    JsonElement requestBody;
-    try
-    {
-        using var j = await JsonDocument.ParseAsync(http.Request.Body);
-        requestBody = j.RootElement.Clone();
-    }
-    catch (JsonException)
-    {
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "request body must be JSON");
-    }
-    if (!requestBody.TryGetProperty("document", out var documentEl) || documentEl.ValueKind != JsonValueKind.Object)
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "document is required and must be a JSON object");
+    if (RequireDocument(req.Document) is { } bad) return bad;
+    var documentEl = req.Document;
 
-    var semantic = requestBody.TryGetProperty("semantic", out var semEl) && semEl.ValueKind == JsonValueKind.False ? false : true;
+    var semantic = req.Semantic ?? true;
 
     // Structural validation against the catalog (collect-all). If the catalog
     // engine is unavailable we still run the structural checks that don't need
@@ -338,39 +469,34 @@ app.MapPost("/flowsheets/validate", async (HttpContext http, CancellationToken c
     http.Response.StatusCode = outcome.Status;
     if (outcome.Status == StatusCodes.Status429TooManyRequests) http.Response.Headers.RetryAfter = "5";
     return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
-});
+})
+    .WithTags("Documents")
+    .WithSummary("Validate a document without solving it.")
+    .WithDescription("Always 200 when the request is well-formed - validity is in the body. Structural checks are collect-all and short-circuit the semantic pass.")
+    .Produces<ValidationResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests);
 
-app.MapPost("/flowsheets/build-solve", async (HttpContext http, CancellationToken ct) =>
+app.MapPost("/flowsheets/build-solve", async (BuildSolveRequest req, HttpContext http, CancellationToken ct) =>
 {
-    JsonElement requestBody;
-    try
-    {
-        using var j = await JsonDocument.ParseAsync(http.Request.Body);
-        requestBody = j.RootElement.Clone();
-    }
-    catch (JsonException)
-    {
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "request body must be JSON");
-    }
-    if (!requestBody.TryGetProperty("document", out var documentEl) || documentEl.ValueKind != JsonValueKind.Object)
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "document is required and must be a JSON object");
+    if (RequireDocument(req.Document) is { } bad) return bad;
+    var documentEl = req.Document;
 
-    var timeoutSeconds = requestBody.TryGetProperty("timeoutSeconds", out var toEl) && toEl.ValueKind == JsonValueKind.Number
-        ? Math.Clamp((int)toEl.GetInt32(), 5, 600)
-        : 120;
+    // CLAMPED, unlike /solve which falls back to the default on an out-of-range value. Both are
+    // deliberate and they differ; docs/api.md says so out loud because the asymmetry is surprising.
+    var timeoutSeconds = req.TimeoutSeconds is { } to ? Math.Clamp(to, 5, 600) : 120;
 
     string? savePath = null;
     string? saveTemplateId = null;
-    if (requestBody.TryGetProperty("saveAsTemplate", out var saveEl) && saveEl.ValueKind == JsonValueKind.Object)
+    if (req.SaveAsTemplate is { } save)
     {
-        if (!saveEl.TryGetProperty("id", out var idEl) || idEl.GetString() is not { Length: > 0 } saveId
-            || !templateIdPattern.IsMatch(saveId))
+        if (save.Id is not { Length: > 0 } saveId || !templateIdPattern.IsMatch(saveId))
             return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
                 "saveAsTemplate.id is required and must match ^[A-Za-z0-9._-]+$");
         // Spec 011 Cut 2: do NOT reject the request up-front when the store
         // isn't writable — the solve must run regardless. A missing/writable
         // store becomes a soft `template.saved:false` block after the solve.
-        var overwrite = saveEl.TryGetProperty("overwrite", out var ovEl) && ovEl.ValueKind == JsonValueKind.True;
+        var overwrite = save.Overwrite ?? false;
         if (userTemplates.CuratedExists(saveId))
             return ErrorResult(StatusCodes.Status409Conflict, "TEMPLATE_NAME_CONFLICT",
                 $"'{saveId}' is a curated template name; choose another id");
@@ -449,25 +575,27 @@ app.MapPost("/flowsheets/build-solve", async (HttpContext http, CancellationToke
     if (outcome.Status == StatusCodes.Status200OK && saveTemplateId is null)
         cache.Set(cacheKey, body);   // save requests are never cache-served (the side effect must run)
     return Results.Content(body, "application/json", statusCode: outcome.Status);
-});
+})
+    .WithTags("Documents")
+    .WithSummary("Build a document into a flowsheet and solve it.")
+    .WithDescription("Optionally saves it as a template. A converged of false is still a 200. A failed save is reported as template.saved false, never as a failed solve.")
+    .Produces<BuildSolveResponse>(StatusCodes.Status200OK)
+    .Produces<DocumentErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status409Conflict)
+    .Produces<DocumentErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests)
+    .Produces<ErrorResponse>(StatusCodes.Status500InternalServerError)
+    .Produces<ErrorResponse>(StatusCodes.Status504GatewayTimeout);
 
 // Flash calculation without a flowsheet (US4, FR-FLASH): thermodynamics run
 // in the worker's `flash` mode; the route only rejects structurally hopeless
 // requests (bad flashType/spec pairing) before paying for a process spawn.
-app.MapPost("/flash", async (HttpContext http, CancellationToken ct) =>
+app.MapPost("/flash", async (FlashRequestDto req, HttpContext http, CancellationToken ct) =>
 {
-    JsonElement flashEl;
-    try
-    {
-        using var j = await JsonDocument.ParseAsync(http.Request.Body);
-        flashEl = j.RootElement.Clone();
-    }
-    catch (JsonException)
-    {
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "request body must be JSON");
-    }
-    if (flashEl.ValueKind != JsonValueKind.Object)
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "flash request must be a JSON object");
+    // Re-serialized to a JsonElement because the worker is handed the request verbatim and
+    // FlashPrecheck reads it structurally. Binding buys the schema and the 400-on-garbage;
+    // the wire payload the worker sees is unchanged.
+    var flashEl = JsonSerializer.SerializeToElement(req, Program.JsonOpts);
 
     if (FlashPrecheck(flashEl) is { } issue)
         return ErrorResult(StatusCodes.Status400BadRequest, "FLASH_INVALID", issue);
@@ -482,7 +610,16 @@ app.MapPost("/flash", async (HttpContext http, CancellationToken ct) =>
     if (outcome.Status == StatusCodes.Status200OK)
         cache.Set(cacheKey, outcome.Body);
     return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
-});
+})
+    .WithTags("Flash")
+    .WithSummary("Single-point flash. No flowsheet involved.")
+    .WithDescription("TP, PH, PS, PVF or TVF. TH and TS are unsupported - they kill the worker process. On a pure compound TVF is accepted but insensitive to vaporFraction; prefer PVF.")
+    .Produces<FlashResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests)
+    .Produces<ErrorResponse>(StatusCodes.Status500InternalServerError)
+    .Produces<ErrorResponse>(StatusCodes.Status504GatewayTimeout);
 
 static string? FlashPrecheck(JsonElement flash)
 {
@@ -513,24 +650,20 @@ static string? FlashPrecheck(JsonElement flash)
 
 // PFD rendering (US6, FR-PFD): worker `pfd` mode returns {pngBase64}; the
 // API decodes to binary image/png. Render failures stay JSON (422).
-app.MapPost("/flowsheets/pfd", async (HttpContext http, CancellationToken ct) =>
+app.MapPost("/flowsheets/pfd", async (PfdRequest req, HttpContext http, CancellationToken ct) =>
 {
-    JsonElement requestBody;
-    try
-    {
-        using var j = await JsonDocument.ParseAsync(http.Request.Body);
-        requestBody = j.RootElement.Clone();
-    }
-    catch (JsonException)
-    {
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "request body must be JSON");
-    }
-    if (!requestBody.TryGetProperty("document", out var documentEl) || documentEl.ValueKind != JsonValueKind.Object)
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST", "document is required and must be a JSON object");
+    if (RequireDocument(req.Document) is { } bad) return bad;
 
-    var outcome = await RunDocumentModeAsync(documentEl, "pfd", TimeSpan.FromSeconds(defaultTimeout), null, ct);
+    var outcome = await RunDocumentModeAsync(req.Document, "pfd", TimeSpan.FromSeconds(defaultTimeout), null, ct);
     return PngOrError(http, outcome);
-});
+})
+    .WithTags("Documents")
+    .WithSummary("Render a document as a PNG diagram.")
+    .WithDescription("Auto-layout is applied when object positions are absent. Failures stay JSON.")
+    .Produces(StatusCodes.Status200OK, typeof(byte[]), "image/png")
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests);
 
 app.MapGet("/templates/{id}/pfd.png", async (string id, HttpContext http, CancellationToken ct) =>
 {
@@ -539,7 +672,15 @@ app.MapGet("/templates/{id}/pfd.png", async (string id, HttpContext http, Cancel
 
     var outcome = await RunCaseAsync(id, templateFile!, [], TimeSpan.FromSeconds(defaultTimeout), ct, mode: "pfd");
     return PngOrError(http, outcome);
-});
+})
+    .WithTags("Templates")
+    .WithSummary("Render a stored template as a PNG diagram.")
+    .WithDescription("Cached by template mtime. Failures stay JSON.")
+    .Produces(StatusCodes.Status200OK, typeof(byte[]), "image/png")
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status404NotFound)
+    .Produces<ErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests);
 
 static IResult PngOrError(HttpContext http, CaseOutcome outcome)
 {
@@ -670,9 +811,16 @@ app.MapGet("/templates/{id}/objects", async (string id, HttpContext http, Cancel
     if (outcome.Status == StatusCodes.Status429TooManyRequests)
         http.Response.Headers.RetryAfter = "5";
     return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
-});
+})
+    .WithTags("Templates")
+    .WithSummary("Object inventory of a template, without solving it.")
+    .WithDescription("Discover legal /solve override targets here: settableProperties is the property vocabulary for that object.")
+    .Produces<ObjectsResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status404NotFound)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests);
 
-app.MapPost("/solve", async (SolveRequest req, HttpContext http, CancellationToken ct) =>
+app.MapPost("/solve", async (SolveRequestDto req, HttpContext http, CancellationToken ct) =>
 {
     var (templateFile, error) = ResolveTemplate(req.TemplateId);
     if (error is not null) return error;
@@ -683,9 +831,19 @@ app.MapPost("/solve", async (SolveRequest req, HttpContext http, CancellationTok
     if (outcome.Status == StatusCodes.Status429TooManyRequests)
         http.Response.Headers.RetryAfter = "5";
     return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
-});
+})
+    .WithTags("Solving")
+    .WithSummary("Solve a stored template with optional overrides.")
+    .WithDescription("A converged of false is a 200, not an error. An out-of-range timeoutSeconds falls back to the server default rather than clamping.")
+    .Produces<SolveResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status404NotFound)
+    .Produces<ErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests)
+    .Produces<ErrorResponse>(StatusCodes.Status500InternalServerError)
+    .Produces<ErrorResponse>(StatusCodes.Status504GatewayTimeout);
 
-app.MapPost("/compare", async (CompareRequest req, HttpContext http, CancellationToken ct) =>
+app.MapPost("/compare", async (CompareRequestDto req, HttpContext http, CancellationToken ct) =>
 {
     // 120 US5 — templateId XOR document. A sweep is a compare whose cases the caller
     // expanded from a range; there is deliberately no /sweep endpoint.
@@ -746,12 +904,19 @@ app.MapPost("/compare", async (CompareRequest req, HttpContext http, Cancellatio
         w.WriteEndObject();
     }
     return Results.Content(System.Text.Encoding.UTF8.GetString(buffer.ToArray()), "application/json");
-});
+})
+    .WithTags("Solving")
+    .WithSummary("Fan out 1 to 25 named cases over one template or document.")
+    .WithDescription("Per-case error isolation: the envelope is 200 and each value is either a solve result or an error object. A sweep is a compare whose cases you expanded from a range.")
+    .Produces<CompareResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status404NotFound)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests);
 
 // Single-variable optimization (US7, FR-OPT): golden-section over the normal
 // solve pipeline — every evaluation is an ordinary cached /solve case, run
 // sequentially (the search is inherently sequential).
-app.MapPost("/optimize", async (OptimizeRequest req, HttpContext http, CancellationToken ct) =>
+app.MapPost("/optimize", async (OptimizeRequestDto req, HttpContext http, CancellationToken ct) =>
 {
     // 120 US5 — templateId XOR document, same rule as /compare.
     var hasDoc = req.Document is { ValueKind: JsonValueKind.Object };
@@ -847,7 +1012,15 @@ app.MapPost("/optimize", async (OptimizeRequest req, HttpContext http, Cancellat
         w.WriteEndObject();
     }
     return Results.Content(System.Text.Encoding.UTF8.GetString(buffer.ToArray()), "application/json");
-});
+})
+    .WithTags("Solving")
+    .WithSummary("Golden-section search over one variable.")
+    .WithDescription("Every evaluation is an ordinary cached solve, run sequentially. Worst-case wall time is maxEvaluations times timeoutSeconds.")
+    .Produces<OptimizeResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status404NotFound)
+    .Produces<ErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests);
 
 app.Run("http://0.0.0.0:8080");
 
@@ -880,6 +1053,15 @@ app.Run("http://0.0.0.0:8080");
 
 static IResult ErrorResult(int status, string error, string message) =>
     Results.Json(new { error, message }, statusCode: status);
+
+// An absent `document` binds to default(JsonElement), whose ValueKind is Undefined — so the
+// "is it there" and "is it an object" checks are one test. Returns null when the document is
+// usable, which is why call sites read `if (RequireDocument(x) is { } bad) return bad;`.
+static IResult? RequireDocument(JsonElement document) =>
+    document.ValueKind == JsonValueKind.Object
+        ? null
+        : ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
+            "document is required and must be a JSON object");
 
 static string ErrorBody(string error, string message) =>
     JsonSerializer.Serialize(new { error, message });
@@ -1111,12 +1293,14 @@ static string WorkerErrorOrDefault(string stdout, string fallbackCode, string fa
 }
 
 record WorkerRun(int? ExitCode, string Stdout, string Stderr);
-record SolveRequest(string TemplateId, List<PropertyOverride>? Overrides, int? TimeoutSeconds);
-record CompareRequest(string? TemplateId, JsonElement? Document, Dictionary<string, List<PropertyOverride>?>? Cases, int? TimeoutSeconds);
-record OptimizeVariable(string Object, string Property, string? Unit, double Min, double Max);
-record OptimizeObjective(string Object, string Property, string Direction);
-record OptimizeRequest(string? TemplateId, JsonElement? Document, OptimizeVariable? Variable, OptimizeObjective? Objective,
-    double? Tolerance, int? MaxEvaluations, int? TimeoutSeconds);
+/// <summary>A single property override applied to a named object before solving.</summary>
+/// <param name="Object">An object tag from GET /templates/{id}/objects, e.g. "R-101".</param>
+/// <param name="Property">
+/// Must appear in that object's settableProperties, e.g. "OutletTemperature". Anything else is
+/// refused with INVALID_PROPERTY.
+/// </param>
+/// <param name="Value">The numeric value, interpreted in <c>unit</c>.</param>
+/// <param name="Unit">Omit for SI. Must be a spelling from GET /catalog/units.</param>
 public record PropertyOverride(string Object, string Property, double Value, string? Unit);
 record CaseOutcome(int Status, string Body);
 

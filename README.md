@@ -55,11 +55,23 @@ dotnet publish/api/DwsimRunner.Api.dll   # listens on :8080
 
 ## API
 
-All bodies are JSON, camelCase; the process listens on `:8080`. **The reference is
-[`docs/api.md`](docs/api.md)** — every route, request and response shape, the error taxonomy,
-the solve lifecycle (timeouts, queueing, caching) and curl examples.
+All bodies are JSON, camelCase; the process listens on `:8080`.
 
-It lives in this repo so a route change and its documentation are the same commit. The
+| | Path |
+|---|---|
+| **OpenAPI 3.0 spec** — generated from the endpoints | `/openapi.json` |
+| **Swagger UI** — browsable, with try-it | `/docs` |
+| **Narrative reference** — lifecycle, caching, engine caveats | [`docs/api.md`](docs/api.md) |
+
+The spec and UI are generated from the endpoint definitions, so they cannot drift from the
+routes. `docs/api.md` covers what a schema cannot state: the caching and queueing rules, and the
+places where the engine accepts something and is quietly wrong about it.
+
+Both doc paths stay open even when `RUNNER_API_KEY` is set (like `/health`) — Swagger UI fetches
+the spec before its Authorize button exists to carry a key, so gating them breaks the UI rather
+than securing anything. `DOCS_ENABLED=false` removes both.
+
+Docs live in this repo so a route change and its documentation are the same commit. The
 `specs/*/contracts/*.md` files in the iskra monorepo are spec-time snapshots kept for history;
 where they and `docs/api.md` disagree, `docs/api.md` is the live one.
 
@@ -91,6 +103,7 @@ One worker process per job; `mode` in the job file selects the handler
 | `MAX_CONCURRENT_SOLVES` | `4` (images set `6`) | worker process pool size (SC-006 target). The code falls back to 4; `Dockerfile` and both compose files set 6, so bare metal gets 4 unless you set it. `/health`'s `maxConcurrent` reports the effective value |
 | `CACHE_SIZE` | `256` | bounded LRU result cache entries |
 | `RUNNER_API_KEY` | _(unset)_ | optional shared API key; when set, `X-Api-Key` required on all routes except `GET /health` (FR-016). Clients read it from `SIM_RUNNER_API_KEY` |
+| `DOCS_ENABLED` | `true` | serve `/openapi.json` + `/docs`. Set `false` to remove both entirely |
 | `BUILD_REF` | `unknown` | which runner build this is (Docker ARG), reported by `/health`. `dwsimVersion` is the DWSIM *library* version and cannot tell two runner builds apart |
 
 ## Testing
@@ -98,8 +111,9 @@ One worker process per job; `mode` in the job file selects the handler
 Two tiers (Constitution IX, test-first):
 
 - **Tier A** — `tests/DwsimRunner.Api.Tests/`: API tests against a `FakeWorker`
-  stub (no DWSIM required, CI-safe). 38 tests cover routing, validation, error
-  taxonomy, cache, queue-cap, /compare, introspection, unitOps, and auth.
+  stub (no DWSIM required, CI-safe). Covers routing, validation, the error
+  taxonomy, cache, queue-cap, /compare, introspection, unitOps, auth, and the
+  generated OpenAPI document (`OpenApiContractTests`).
   ```bash
   dotnet test tests/DwsimRunner.Api.Tests
   ```
