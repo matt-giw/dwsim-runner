@@ -95,11 +95,26 @@ public sealed record IssueResponse(
 /// </param>
 /// <param name="MaxEvaluations">The /optimize budget cap.</param>
 /// <param name="MaxTimeoutSeconds">The largest timeoutSeconds any route will honour.</param>
+/// <param name="FlowsheetProbe">
+/// Whether the WORKER actually constructed a flowsheet on this image. ok/dwsimFound only say the
+/// DWSIM files are on disk, so they stay true on an image whose engine cannot build.
+/// </param>
 /// <param name="Hint">Install instructions when dwsimFound is false; null otherwise.</param>
 public sealed record HealthResponse(
     bool Ok, string DwsimPath, bool DwsimFound, string? DwsimVersion, string BuildRef,
-    string SupportedRange, bool VersionSupported, string TemplatesPath, string?[] Templates,
+    string SupportedRange, bool VersionSupported, ProbeReport FlowsheetProbe,
+    string TemplatesPath, string?[] Templates,
     int MaxConcurrent, int MaxEvaluations, int MaxTimeoutSeconds, string? Hint);
+
+/// <summary>The result of the background flowsheet-construction probe (ISK-104).</summary>
+/// <param name="State">"pending" until the probe answers, then "ok" or "failed".</param>
+/// <param name="ElapsedMs">How long the probe took; 0 while pending.</param>
+/// <param name="CheckedAt">When it last answered, ISO-8601 UTC; null while pending.</param>
+/// <param name="Error">The cause when state is "failed", so a red probe needs no deploy logs.</param>
+public record ProbeReport(string State, long ElapsedMs, string? CheckedAt, string? Error)
+{
+    public static readonly ProbeReport Pending = new("pending", 0, null, null);
+}
 
 /// <summary>One template, curated or user-saved.</summary>
 /// <param name="Id">The id used as templateId elsewhere.</param>

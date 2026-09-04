@@ -160,6 +160,32 @@ public class OpenApiContractTests
     }
 
     [Fact]
+    public async Task Health_body_has_no_field_the_schema_does_not_name()
+    {
+        using var host = new RunnerHost();
+        var spec = await SpecAsync(host);
+
+        // /health is the one success body the API composes itself (an anonymous object) rather
+        // than passing through from the worker, so the round-trip test above never sees it.
+        // A field added to the handler and not to HealthResponse is exactly the drift this whole
+        // file exists to prevent — flowsheetProbe arrived that way.
+        var declared = spec.GetProperty("components").GetProperty("schemas")
+            .GetProperty("HealthResponse").GetProperty("properties")
+            .EnumerateObject().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+
+        var body = await (await host.Client.GetAsync("/health"))
+            .Content.ReadFromJsonAsync<JsonElement>(Json);
+        var actual = body.EnumerateObject().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+
+        Assert.True(!actual.Except(declared).Any(),
+            "/health returns fields HealthResponse does not name: " +
+            string.Join(", ", actual.Except(declared)));
+        Assert.True(!declared.Except(actual).Any(),
+            "HealthResponse names fields /health does not return: " +
+            string.Join(", ", declared.Except(actual)));
+    }
+
+    [Fact]
     public async Task Api_key_scheme_is_declared()
     {
         using var host = new RunnerHost();

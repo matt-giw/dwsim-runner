@@ -251,6 +251,12 @@ curl -s localhost:8080/health | jq .
   "buildRef": "a41cf15",          // WHICH RUNNER BUILD, baked from a Docker ARG. "unknown" if unset
   "supportedRange": ">=9.0 <10",
   "versionSupported": true,
+  "flowsheetProbe": {              // did the WORKER build a flowsheet on THIS image? (ISK-104)
+    "state": "ok",                 // "pending" until the background probe answers, then "ok"|"failed"
+    "elapsedMs": 4210,
+    "checkedAt": "2026-09-04T21:30:00Z",  // null while pending
+    "error": null                  // the cause when "failed"
+  },
   "templatesPath": "/templates",
   "templates": ["methanol_synthesis"],   // bare curated ids, ordinal-sorted
   "maxConcurrent": 6,
@@ -264,6 +270,11 @@ curl -s localhost:8080/health | jq .
 runner images pinning the same DWSIM report it identically while disagreeing about what they
 accept. `buildRef` is the field that answers "which build is this". Unset is an explicit
 `"unknown"`, never an absent field, because an absent field and a stale one read the same.
+
+`ok`/`dwsimFound` only say the DWSIM **files are on disk**, so they stay `true` on an image whose
+engine cannot actually build. `flowsheetProbe` is the field that answers whether the **worker**
+constructed a flowsheet here; it starts `pending` and is filled in by a background probe on the
+first `/health` call.
 
 An out-of-range engine still solves; the result gains a best-effort warning in `warnings[]`.
 
