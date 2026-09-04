@@ -158,10 +158,100 @@ const string SupportedRange = ">=9.0 <10";
     return (true, version, supported);
 }
 
+// ISK-104 — /health must prove FLOWSHEET CONSTRUCTION, not that a file is on disk.
+//
+// ProbeDwsim() above stats DWSIM.Automation.dll and reads its PE version. The API process
+// never loads DWSIM (Constitution I), so everything that can actually break lives in the
+// WORKER: a bad image, a missing native dependency, a truncated DWSIM copy. All of those
+// report `ok: true, dwsimFound: true` today and fail every solve — and WORKER_CRASH is the
+// largest error class in the field (iskra 137/138 trace census).
+//
+// The probe is the EXISTING `validate` worker mode (Document → FlowsheetBuilder.Build, no
+// solve) against the flash-drum document the live integration suite already builds. It is a
+// property of the IMAGE, so it runs ONCE per process — in the BACKGROUND, on the first
+// /health call:
+//   • background, because /health is the one route that skips the API key and Railway polls
+//     it; a worker spawn per call is both slow and an open cost;
+//   • on first call rather than at startup, so the API test hosts don't each spawn a worker;
+//   • once, because a boot-time answer is exactly the question ("can THIS build construct a
+//     flowsheet"). The first /health of a deploy reports `pending`; the next reports the fact.
+//
+// `ok` deliberately does NOT fold this in. Railway health-checks this path, so a failed probe
+// folded into `ok` would hold a deploy out of service on a background result that is not ready
+// when the first check arrives. The probe is REPORTED; the reader decides.
+// The flash-drum document from tests/DwsimRunner.Integration.Tests/BuildSolveTests.cs — already
+// proven to BUILD AND SOLVE against the live engine, which is the only reason to prefer it to a
+// bare stream. It exercises compound resolution, package resolution, unit-op instantiation and
+// port planning; a probe document nothing else builds would make a red probe ambiguous.
+const string FlowsheetProbeDocument = """
+{
+  "schemaVersion": 1,
+  "name": "health flowsheet probe",
+  "compounds": ["Methane", "Ethane"],
+  "propertyPackage": "PR",
+  "objects": [
+    { "tag": "FEED", "kind": "materialStream",
+      "spec": { "temperature": { "value": -40, "unit": "C" },
+                "pressure": { "value": 10, "unit": "bar" },
+                "massFlow": { "value": 100, "unit": "kg/h" },
+                "composition": { "basis": "molar",
+                                 "fractions": { "Methane": 0.5, "Ethane": 0.5 } } } },
+    { "tag": "V-1", "kind": "unitOp", "type": "separator" },
+    { "tag": "VAP", "kind": "materialStream" },
+    { "tag": "LIQ", "kind": "materialStream" }
+  ],
+  "connections": [
+    { "from": "FEED", "to": "V-1", "port": "Inlet" },
+    { "from": "V-1", "to": "VAP", "port": "Vapor Outlet" },
+    { "from": "V-1", "to": "LIQ", "port": "Liquid Outlet" }
+  ]
+}
+""";
+
+ProbeReport flowsheetProbe = ProbeReport.Pending;
+int flowsheetProbeStarted = 0;
+
+void StartFlowsheetProbe()
+{
+    if (Interlocked.Exchange(ref flowsheetProbeStarted, 1) != 0) return;
+    _ = Task.Run(async () =>
+    {
+        var sw = Stopwatch.StartNew();
+        string? failure = null;
+        try
+        {
+            using var probeDoc = JsonDocument.Parse(FlowsheetProbeDocument);
+            var outcome = await RunDocumentModeAsync(probeDoc.RootElement.Clone(), "validate",
+                TimeSpan.FromSeconds(defaultTimeout), null, CancellationToken.None);
+            // Construction succeeded iff the worker answered 200 with valid:true. A 200
+            // carrying valid:false is the engine REFUSING to build, which is the outcome
+            // this probe exists to make visible — not a pass with issues attached.
+            bool built = outcome.Status == StatusCodes.Status200OK
+                && JsonDocument.Parse(outcome.Body).RootElement.TryGetProperty("valid", out var v)
+                && v.ValueKind == JsonValueKind.True;
+            if (!built) failure = Truncate(outcome.Body);
+        }
+        catch (Exception ex) { failure = Truncate(ex.Message); }
+
+        flowsheetProbe = new ProbeReport(
+            failure is null ? "ok" : "failed",
+            sw.ElapsedMilliseconds,
+            DateTime.UtcNow.ToString("o"),
+            failure);
+        if (failure is not null)
+            app.Logger.LogError("flowsheet probe FAILED after {ElapsedMs}ms: {Error}", sw.ElapsedMilliseconds, failure);
+        else
+            app.Logger.LogInformation("flowsheet probe ok in {ElapsedMs}ms", sw.ElapsedMilliseconds);
+    });
+
+    static string Truncate(string s) => s.Length > 400 ? s[..400] + "…" : s;
+}
+
 // One status call answers: is it up, what engine version, what templates (FR-007).
 app.MapGet("/health", () =>
 {
     var (found, version, supported) = ProbeDwsim();
+    StartFlowsheetProbe();
     return Results.Ok(new
     {
         ok = found,
@@ -171,6 +261,8 @@ app.MapGet("/health", () =>
         buildRef,
         supportedRange = SupportedRange,
         versionSupported = supported,
+        // ISK-104 — did the WORKER build a flowsheet on this image? pending | ok | failed.
+        flowsheetProbe,
         templatesPath,
         templates = ListTemplateIds(),
         maxConcurrent,
@@ -1197,6 +1289,15 @@ static string WorkerErrorOrDefault(string stdout, string fallbackCode, string fa
     }
     catch (JsonException) { /* fall through */ }
     return ErrorBody(fallbackCode, fallbackMessage);
+}
+
+// ISK-104 — the flowsheet-construction probe's answer, as /health reports it.
+// `checkedAt`/`error` are null while `state` is "pending"; `error` carries the worker's own
+// response body (or the exception message) when it is "failed", so a red probe names its cause
+// without a trip to the deploy logs.
+record ProbeReport(string State, long ElapsedMs, string? CheckedAt, string? Error)
+{
+    public static readonly ProbeReport Pending = new("pending", 0, null, null);
 }
 
 record WorkerRun(int? ExitCode, string Stdout, string Stderr);

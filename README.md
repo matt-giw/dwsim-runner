@@ -62,7 +62,7 @@ All bodies are JSON, camelCase. Full contracts:
 
 | Route | Body / result |
 |---|---|
-| `GET /health` | `{ ok, dwsimPath, dwsimFound, dwsimVersion, supportedRange, versionSupported, templatesPath, templates:[...], maxConcurrent, maxEvaluations, maxTimeoutSeconds, hint? }` — one status call answers readiness + version + templates (bare curated ids) |
+| `GET /health` | `{ ok, dwsimPath, dwsimFound, dwsimVersion, buildRef, supportedRange, versionSupported, flowsheetProbe:{state, elapsedMs, checkedAt?, error?}, templatesPath, templates:[...], maxConcurrent, maxEvaluations, maxTimeoutSeconds, hint? }` — one status call answers readiness + version + templates (bare curated ids). `buildRef` is which BUILD this is (`unknown` when `BUILD_REF` is unset); `flowsheetProbe` is whether the **worker** actually constructed a flowsheet on this image — `pending` until the background probe answers, then `ok` or `failed` with the cause. `ok`/`dwsimFound` only say the DWSIM files are on disk, so they stay true when the engine cannot build |
 | `GET /templates` | `[{ id, source:"curated"\|"user", createdUtc?, solvedAtSave? }, …]` — object-shaped listing, curated + user templates |
 | `DELETE /templates/{id}` | 204 — user templates only (403 `TEMPLATE_READONLY` for curated) |
 | `GET /templates/{id}/file` | binary `application/octet-stream` `.dwxmz` — raw flowsheet file (spec 011 Cut 3; the iskra-app pulls a saved template into its Postgres `flow_templates` table via this, then DELETEs the runner-side copy) |
