@@ -53,18 +53,44 @@ public static class FlowsheetBuilder
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
+    // FND-0102 — construction caps, enforced BEFORE the build loops below turn each entry into a
+    // live engine object. Same defaults and same env vars as the API's DocumentValidator, and the
+    // duplication is deliberate: POST /flowsheets/pfd reaches this file WITHOUT running that
+    // validator, so a cap that lives only API-side has a hole in it, and "an external validator
+    // already checked" is the same unverifiable-owner assumption FND-0104 was filed about.
+    // The worker inherits the API's environment (ProcessStartInfo copies it), so one container
+    // variable moves both.
+    internal static int MaxObjects => Limit("MAX_DOCUMENT_OBJECTS", 500);
+    internal static int MaxConnections => Limit("MAX_DOCUMENT_CONNECTIONS", 1000);
+    internal static int MaxReactions => Limit("MAX_DOCUMENT_REACTIONS", 200);
+
+    private static int Limit(string name, int fallback) =>
+        int.TryParse(Environment.GetEnvironmentVariable(name), out var v) && v > 0 ? v : fallback;
+
     public static FlowDoc ParseDocument(JsonElement el)
     {
+        FlowDoc? doc;
         try
         {
-            var doc = el.Deserialize<FlowDoc>(JsonOpts);
-            if (doc is null || doc.Objects is null)
-                throw new WorkerInputException("INVALID_REQUEST", "document is empty or has no objects");
-            return doc;
+            doc = el.Deserialize<FlowDoc>(JsonOpts);
         }
         catch (JsonException ex)
         {
             throw new WorkerInputException("INVALID_REQUEST", $"document does not match schema: {ex.Message}");
+        }
+        if (doc is null || doc.Objects is null)
+            throw new WorkerInputException("INVALID_REQUEST", "document is empty or has no objects");
+
+        Cap("objects", doc.Objects.Count, MaxObjects);
+        Cap("connections", doc.Connections?.Count ?? 0, MaxConnections);
+        Cap("reactions", doc.Reactions?.Count ?? 0, MaxReactions);
+        return doc;
+
+        static void Cap(string what, int count, int max)
+        {
+            if (count > max)
+                throw new WorkerInputException("DOCUMENT_TOO_LARGE",
+                    $"document has {count} {what} (max {max})");
         }
     }
 

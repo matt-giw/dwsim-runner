@@ -34,6 +34,26 @@ int    defaultTimeout = int.TryParse(app.Configuration["SOLVE_TIMEOUT_SECONDS"],
 int    maxConcurrent  = int.TryParse(app.Configuration["MAX_CONCURRENT_SOLVES"], out var c) ? c : 4;
 int    cacheSize      = int.TryParse(app.Configuration["CACHE_SIZE"], out var cs) ? cs : 256;
 
+// FND-0029 — the aggregate work one request may commission, in worker-seconds. `/optimize` and
+// `/compare` both fan a single request out into many bounded solves; bounding each one says
+// nothing about the total. maxEvaluations(30) x timeoutSeconds(600) is five hours on one slot.
+//
+// Default 3600 s. The corpus calibrates it: 216 measured solves in spec 143 all finished inside
+// the deployed 60 s SOLVE_TIMEOUT_SECONDS, so a request left on the default per-case timeout is
+// unaffected at any legal case count (30 x 60 = 1800). Only a caller explicitly asking for long
+// per-case timeouts AND many cases is refused, and it is refused BEFORE it takes a slot.
+int    maxWorkSeconds = int.TryParse(app.Configuration["MAX_REQUEST_WORK_SECONDS"], out var mw) ? mw : 3600;
+
+// FND-0102 — document construction caps. `MaxObjects`/`MaxDocumentBytes` already shipped as
+// constants; connections and reactions were unbounded and pfd bypasses this validator entirely
+// (the worker carries its own copy of all four for that reason — FlowsheetBuilder.ParseDocument).
+// Largest document in the eval corpus: 47 objects / 48 connections / 4 reactions. These defaults
+// are ~10x that.
+DocumentValidator.MaxObjects       = int.TryParse(app.Configuration["MAX_DOCUMENT_OBJECTS"], out var mo) ? mo : 500;
+DocumentValidator.MaxConnections   = int.TryParse(app.Configuration["MAX_DOCUMENT_CONNECTIONS"], out var mc) ? mc : 1000;
+DocumentValidator.MaxReactions     = int.TryParse(app.Configuration["MAX_DOCUMENT_REACTIONS"], out var mr) ? mr : 200;
+DocumentValidator.MaxDocumentBytes = int.TryParse(app.Configuration["MAX_DOCUMENT_BYTES"], out var mb) ? mb : 200 * 1024;
+
 var gate  = new SemaphoreSlim(maxConcurrent);
 var cache = new ResultCache(cacheSize);
 int maxAdmitted = maxConcurrent * 5;   // running + queued (queue cap = 4×concurrency)
@@ -55,29 +75,61 @@ userTemplates.EnsureDirectory();
 
 var templateIdPattern = new Regex("^[A-Za-z0-9._-]+$", RegexOptions.Compiled);
 
-// Optional shared API key (FR-016): set RUNNER_API_KEY and every route except
-// GET /health requires X-Api-Key. Unset = open (local dev). User-level
-// authn/authz stays in the consuming platform.
-if (app.Configuration["RUNNER_API_KEY"] is { Length: > 0 } apiKey)
+// Shared API key (FR-016). FND-0002 / FND-0075: this used to read
+// `if (RUNNER_API_KEY is { Length: > 0 })` — the middleware was registered ONLY when a key
+// was configured, so an absent or empty value meant no auth middleware at all. The failure
+// mode of a config omission was silent and OPEN.
+//
+// UNSET IS A REFUSAL, NEVER AN OPENING. The middleware is now registered unconditionally and
+// there is no configuration in which a route below is reachable without a key. This is the
+// same rule iskra-app's `checkApiAuth` already enforces — `if (!expected) return { ok: false,
+// reason: "API key auth is not configured" }` (iskra-app/lib/auth.ts) — spec 032's "unset =
+// open is not a gate", second service. The two now agree.
+//
+// The unconfigured case answers 503, not 401: a missing server secret is not a client
+// credential problem, and a deploy that lost its variable must not read as "your key is
+// wrong". `/health` stays exempt so that misconfiguration is diagnosable (and so the
+// container healthcheck can still report), which is deliberately the ONLY exemption.
+//
+// READ ROUTES ARE GATED TOO, and that is a decision rather than an oversight:
+//   - GET /templates and GET /templates/{id}/file enumerate and stream saved flowsheets —
+//     customer documents, not public metadata.
+//   - GET /templates/{id}/objects, /templates/{id}/pfd.png and every /catalog/* route SPAWN A
+//     WORKER PROCESS. Engine execution on a GET is the same resource primitive as a POST.
+//   - A read/write split needs a route classification list, and the failure mode of forgetting
+//     to add a new route to it is silent and open — the exact defect being fixed here. One
+//     rule, no list.
+var apiKey = app.Configuration["RUNNER_API_KEY"] ?? "";
+var apiKeyBytes = System.Text.Encoding.UTF8.GetBytes(apiKey);
+app.Use(async (ctx, next) =>
 {
-    var keyBytes = System.Text.Encoding.UTF8.GetBytes(apiKey);
-    app.Use(async (ctx, next) =>
-    {
-        if (ctx.Request.Path == "/health") { await next(); return; }
+    if (ctx.Request.Path == "/health") { await next(); return; }
 
-        var presented = ctx.Request.Headers["X-Api-Key"].ToString();
-        var ok = presented.Length > 0 && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
-            System.Text.Encoding.UTF8.GetBytes(presented), keyBytes);
-        if (!ok)
-        {
-            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            ctx.Response.ContentType = "application/json";
-            await ctx.Response.WriteAsync(ErrorBody("UNAUTHORIZED", "missing or invalid X-Api-Key header"));
-            return;
-        }
-        await next();
-    });
-}
+    if (apiKey.Length == 0)
+    {
+        ctx.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(ErrorBody("AUTH_NOT_CONFIGURED",
+            "RUNNER_API_KEY is not set on this runner; every route except GET /health is refused"));
+        return;
+    }
+
+    var presented = ctx.Request.Headers["X-Api-Key"].ToString();
+    var ok = presented.Length > 0 && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+        System.Text.Encoding.UTF8.GetBytes(presented), apiKeyBytes);
+    if (!ok)
+    {
+        ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(ErrorBody("UNAUTHORIZED", "missing or invalid X-Api-Key header"));
+        return;
+    }
+    await next();
+});
+
+if (apiKey.Length == 0)
+    app.Logger.LogError(
+        "RUNNER_API_KEY is not set — every route except GET /health will answer 503 AUTH_NOT_CONFIGURED");
 
 // Engine version via FILE METADATA only — the API process never loads DWSIM
 // assemblies (Constitution I). We parse the PE assembly manifest with
@@ -632,6 +684,12 @@ async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, 
                     LogOutcome("RENDER_FAILED");
                     return new(StatusCodes.Status422UnprocessableEntity,
                         WorkerErrorOrDefault(stdout, "RENDER_FAILED", "PFD rendering failed"));
+                case 6:   // FND-0103/0104 — the worker's OWN deadline fired. Same taxonomy as the
+                          // API-side kill above: the caller asked for a solve and did not get one
+                          // in time, and which watchdog noticed is not their problem.
+                    LogOutcome("SOLVE_TIMEOUT");
+                    return new(StatusCodes.Status504GatewayTimeout,
+                        WorkerErrorOrDefault(stdout, "SOLVE_TIMEOUT", "worker exceeded its own deadline"));
                 default:
                     app.Logger.LogError("docmode worker crashed (exit {Code}) for mode {Mode}: {Stderr}",
                         proc.ExitCode, mode, stderr);
@@ -708,6 +766,10 @@ app.MapPost("/compare", async (CompareRequest req, HttpContext http, Cancellatio
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
             "cases must contain between 1 and 25 entries");
 
+    var compareTimeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
+    if (WorkBudgetRefusal(req.Cases.Count, compareTimeout) is { } compareRefusal)
+        return compareRefusal;
+
     // Rough whole-request admission check; per-case races still degrade to a
     // per-case QUEUE_FULL error rather than failing the set.
     if (Volatile.Read(ref admitted) + req.Cases.Count > maxAdmitted)
@@ -717,7 +779,7 @@ app.MapPost("/compare", async (CompareRequest req, HttpContext http, Cancellatio
             "application/json", statusCode: StatusCodes.Status429TooManyRequests);
     }
 
-    var timeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
+    var timeout = compareTimeout;
 
     // Fan out concurrently — each case flows through the same semaphore + cache
     // as /solve (or build-solve for document cases), so results are identical
@@ -787,6 +849,13 @@ app.MapPost("/optimize", async (OptimizeRequest req, HttpContext http, Cancellat
     var maxEvaluations = req.MaxEvaluations ?? 20;
     var tolerance = req.Tolerance is > 0 ? req.Tolerance.Value : (variable.Max - variable.Min) * 1e-3;
     var timeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
+
+    // FND-0029 — refuse an over-budget search UP FRONT rather than accepting it and running.
+    // Golden section is sequential, so this request holds a solve slot for up to
+    // maxEvaluations x timeout; on the pre-fix defaults that is 30 x 600 s = 5 hours, and four
+    // such requests starve every other caller at MAX_CONCURRENT_SOLVES=4.
+    if (WorkBudgetRefusal(maxEvaluations, timeout) is { } optimizeRefusal)
+        return optimizeRefusal;
 
     var outcome = await Optimizer.GoldenSectionAsync(
         variable.Min, variable.Max, tolerance, maxEvaluations,
@@ -876,6 +945,21 @@ app.Run("http://0.0.0.0:8080");
     }
 
     return (file, null);
+}
+
+// FND-0029 — the one aggregate work bound, shared by /compare and /optimize because they are
+// the only two routes that expand one request into many solves. Returns null when the request
+// fits its budget. Deliberately an UP-FRONT refusal rather than a mid-flight stopwatch: every
+// case is already bounded by `perCase`, so cases x perCase is the whole worker-slot exposure,
+// and refusing before the first spawn is the difference between a 400 and four hours of held
+// capacity. Queue-wait time is not counted (it holds no worker), only the work commissioned.
+IResult? WorkBudgetRefusal(int cases, TimeSpan perCase)
+{
+    var requested = cases * perCase.TotalSeconds;
+    if (requested <= maxWorkSeconds) return null;
+    return ErrorResult(StatusCodes.Status400BadRequest, "WORK_BUDGET_EXCEEDED",
+        $"{cases} cases x {perCase.TotalSeconds:0}s = {requested:0}s of solve time exceeds this runner's "
+        + $"per-request budget of {maxWorkSeconds}s; lower timeoutSeconds or the case count");
 }
 
 static IResult ErrorResult(int status, string error, string message) =>
@@ -1020,6 +1104,11 @@ async Task<CaseOutcome> RunCaseAsync(string templateId, string templateFile,
                     LogOutcome("RENDER_FAILED");
                     return new(StatusCodes.Status422UnprocessableEntity,
                         WorkerErrorOrDefault(stdout, "RENDER_FAILED", "PFD rendering failed"));
+
+                case 6:   // FND-0103/0104 — the worker's own deadline fired (see the docmode twin).
+                    LogOutcome("SOLVE_TIMEOUT");
+                    return new(StatusCodes.Status504GatewayTimeout,
+                        WorkerErrorOrDefault(stdout, "SOLVE_TIMEOUT", "worker exceeded its own deadline"));
 
                 default:  // crash — detail stays in server logs only
                     app.Logger.LogError("worker crashed (exit {Code}) for template '{Template}': {Stderr}",
