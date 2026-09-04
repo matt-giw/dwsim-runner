@@ -108,6 +108,58 @@ public static class DocumentValidator
     private static readonly HashSet<string> AllKnownUnits =
         Units.Values.SelectMany(u => u).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// The named refusal for ONE `{value, unit}` field reached from outside the document path —
+    /// `/flash`'s specs, `/solve` and `/compare` overrides, `/optimize`'s variable. Returns null
+    /// when the unit is acceptable, otherwise the message the caller turns into a 400.
+    /// </summary>
+    /// <remarks>
+    /// 213. `Converter.ConvertToSI` returns the value UNCHANGED for a spelling it does not know, so
+    /// an unguarded field reads `{value: 120, unit: "degC"}` as 120 KELVIN and converges — a wrong
+    /// answer wearing a result, which is the worst failure shape this product has. Measured on
+    /// `/flash` 2026-08-31 and re-confirmed on this build: the state echoed back −153.15 °C, vapor
+    /// fraction 0, no error, no warning.
+    ///
+    /// This is the same vocabulary `ValidateStructural` enforces on a document, REACHED from the
+    /// other entry points rather than transcribed into them. A second copy is how two halves start
+    /// disagreeing about one unit — the failure `UnitVocabulary` above was published to prevent.
+    ///
+    /// `kind` is null where the caller cannot know it: an override names an object and a property,
+    /// not a quantity, and resolving the quantity needs the template the worker has not loaded yet.
+    /// The fallback checks the union of every accepted spelling — strictly weaker than the per-kind
+    /// check, and still enough to refuse `degC`, which is the case that was reported.
+    ///
+    /// Aliasing is deliberately NOT done here. `degC`/`barg`/`bara` are app spellings, and
+    /// `@iskra/document-mapper`'s `normalizeQuantity` already translates them to this vocabulary
+    /// before the wire. The runner owning a closed canonical vocabulary and the client owning the
+    /// aliases is the existing split; accepting aliases here would give one fact two homes.
+    /// </remarks>
+    public static string? UnitRefusal(string field, string? unit, string? kind)
+    {
+        // Absent or empty means SI — the contract this table has carried since spec 001, and NOT
+        // what 213 is about. A bare number is a caller saying "already SI"; an unrecognised
+        // spelling is a caller saying something the runner then ignores.
+        if (unit is not { Length: > 0 }) return null;
+
+        if (kind is null)
+            return AllKnownUnits.Contains(unit) ? null : $"unknown unit '{unit}' on {field}";
+
+        if (!Units.TryGetValue(kind, out var accepted))
+            // A quantity this runner has never measured a vocabulary for (`entropy`, reachable via
+            // a PS flash). Refusing is the honest answer: admitting a spelling the converter turns
+            // out NOT to know is the very defect this method exists to close, and nothing offline
+            // can tell the two apart — capture before you bind.
+            return $"{field} has no accepted unit vocabulary on this runner "
+                 + $"(got '{unit}'); send a bare SI value with no unit";
+
+        if (accepted.Length == 0)
+            return $"{field} is dimensionless and takes no unit (got '{unit}')";
+
+        return accepted.Contains(unit, StringComparer.OrdinalIgnoreCase)
+            ? null
+            : $"unknown {kind} unit '{unit}' on {field}; accepted: {string.Join(", ", accepted)}";
+    }
+
     public static List<ValidationIssue> ValidateStructural(JsonElement doc, CatalogModel catalog)
     {
         var issues = new List<ValidationIssue>();
