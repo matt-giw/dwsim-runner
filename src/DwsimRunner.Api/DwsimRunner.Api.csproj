@@ -8,6 +8,16 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Swashbuckle reads these to describe the endpoints it discovers. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- 1591: we do not require an XML comment on every public member. -->
+    <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- OpenAPI: the spec is generated from the endpoint metadata, so it cannot
+         drift from the routes. See docs/api.md and tests/OpenApiContractTests.cs. -->
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+  </ItemGroup>
 
 </Project>
