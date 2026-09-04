@@ -56,8 +56,21 @@ public sealed class CatalogModel
 
 public static class DocumentValidator
 {
-    public const int MaxObjects = 500;
-    public const int MaxDocumentBytes = 200 * 1024;
+    // FND-0102. Set once at boot from configuration (Program.cs) so a deployment can raise them
+    // for an unusually large plant without a rebuild; the initializers here are the defaults and
+    // are what a unit test sees. `MaxObjects`/`MaxDocumentBytes` were already enforced; the
+    // connection and reaction arrays were not bounded at all.
+    //
+    // Calibration: the largest document in the eval corpus is 47 objects / 48 connections /
+    // 4 reactions. These are ~10x that.
+    //
+    // The worker keeps its OWN copy of these four (FlowsheetBuilder.ParseDocument) and that is
+    // deliberate, not drift: POST /flowsheets/pfd reaches the worker without running this
+    // validator at all, so a document cap that lives only here has a hole in it.
+    public static int MaxObjects { get; set; } = 500;
+    public static int MaxConnections { get; set; } = 1000;
+    public static int MaxReactions { get; set; } = 200;
+    public static int MaxDocumentBytes { get; set; } = 200 * 1024;
     private const int SupportedSchemaVersion = 1;
 
     // The unit vocabulary shared with spec-001 overrides. Empty/absent unit is
@@ -227,6 +240,17 @@ public static class DocumentValidator
 
         if (objects.Count > MaxObjects)
             Error("DOCUMENT_TOO_LARGE", null, "objects", $"document has {objects.Count} objects (max {MaxObjects})");
+
+        // FND-0102 — the other two construction arrays. Every entry becomes engine work in the
+        // worker (a live connection, a live reaction), so an unbounded array is unbounded work.
+        if (doc.TryGetProperty("connections", out var connsCap) && connsCap.ValueKind == JsonValueKind.Array
+            && connsCap.GetArrayLength() > MaxConnections)
+            Error("DOCUMENT_TOO_LARGE", null, "connections",
+                $"document has {connsCap.GetArrayLength()} connections (max {MaxConnections})");
+        if (doc.TryGetProperty("reactions", out var rxCap) && rxCap.ValueKind == JsonValueKind.Array
+            && rxCap.GetArrayLength() > MaxReactions)
+            Error("DOCUMENT_TOO_LARGE", null, "reactions",
+                $"document has {rxCap.GetArrayLength()} reactions (max {MaxReactions})");
 
         for (var i = 0; i < objects.Count; i++)
         {

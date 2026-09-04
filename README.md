@@ -50,31 +50,32 @@ export TEMPLATES_PATH=./templates
 export WORKER_PATH=./publish/worker/DwsimRunner.Worker.dll
 export SOLVE_TIMEOUT_SECONDS=60
 export MAX_CONCURRENT_SOLVES=6
+export RUNNER_API_KEY=local-dev-key   # REQUIRED — the runner fails closed without it
 dotnet publish/api/DwsimRunner.Api.dll   # listens on :8080
 ```
 
 ## API
 
-All bodies are JSON, camelCase. Full contracts:
-[`../specs/001-dwsim-headless-runner/contracts/runner-api.md`](../specs/001-dwsim-headless-runner/contracts/runner-api.md) (v1, still in force) and
-[`../specs/002-dwsim-mcp-tools/contracts/runner-api-v2.md`](../specs/002-dwsim-mcp-tools/contracts/runner-api-v2.md) (authoring extension).
+All bodies are JSON, camelCase; the process listens on `:8080`.
 
-| Route | Body / result |
+| | Path |
 |---|---|
-| `GET /health` | `{ ok, dwsimPath, dwsimFound, dwsimVersion, supportedRange, versionSupported, templatesPath, templates:[...], maxConcurrent, maxEvaluations, maxTimeoutSeconds, hint? }` — one status call answers readiness + version + templates (bare curated ids) |
-| `GET /templates` | `[{ id, source:"curated"\|"user", createdUtc?, solvedAtSave? }, …]` — object-shaped listing, curated + user templates |
-| `DELETE /templates/{id}` | 204 — user templates only (403 `TEMPLATE_READONLY` for curated) |
-| `GET /templates/{id}/file` | binary `application/octet-stream` `.dwxmz` — raw flowsheet file (spec 011 Cut 3; the iskra-app pulls a saved template into its Postgres `flow_templates` table via this, then DELETEs the runner-side copy) |
-| `GET /templates/{id}/objects` | `{ objects:[{ tag, type, settableProperties }] }` — object inventory (FR-014); no solve, cached by template mtime. Discover override targets here |
-| `GET /templates/{id}/pfd.png` | binary `image/png` — rendered flowsheet diagram, cached by template mtime |
-| `POST /solve` | `{ templateId, overrides:[{object, property, value, unit?}], timeoutSeconds? }` → `{ converged, elapsedMs, streams:[…], energy:[…], unitOps:[…], warnings:[…] }` |
-| `POST /compare` | `{ templateId, cases:{ name → overrides[] }, timeoutSeconds? }` → `{ results:{ name → SolveResult \| CaseError } }` — fan-out with per-case error isolation (1–25 cases) |
-| `GET /catalog/compounds` · `/catalog/property-packages` · `/catalog/unit-op-types` | engine catalogs (names, formulas; package ids; unit-op port/parameter schemas), cached per engine version |
-| `POST /flowsheets/validate` | `{ document, semantic? }` → `{ valid, issues:[{severity, code, tag?, path?, message}] }` — structural checks in-process, semantic via a worker |
-| `POST /flowsheets/build-solve` | `{ document, timeoutSeconds?, saveAsTemplate?:{id, overwrite?} }` → SolveResult + `build:{objectsCreated, connectionsMade, elapsedMs}` (+ `template:{id, source, saved}` when saved) |
-| `POST /flowsheets/pfd` | `{ document }` → binary `image/png` (auto-layout when positions absent) |
-| `POST /flash` | Flash Request (compounds, composition, propertyPackage, flashType TP\|PH\|PS + matching specs) → phase split, per-phase compositions, h/s |
-| `POST /optimize` | `{ templateId, variable:{object, property, unit?, min, max}, objective:{object, property, direction}, tolerance?, maxEvaluations? (≤30), timeoutSeconds? }` → `{ best:{value, objectiveValue, result}, evaluations:[…], converged, stoppedReason }` — golden-section, sequential solves |
+| **OpenAPI 3.0 spec** — generated from the endpoints | `/openapi.json` |
+| **Swagger UI** — browsable, with try-it | `/docs` |
+| **Narrative reference** — lifecycle, caching, engine caveats | [`docs/api.md`](docs/api.md) |
+
+The spec and UI are generated from the endpoint definitions, so they cannot drift from the
+routes. `docs/api.md` covers what a schema cannot state: the caching and queueing rules, and the
+places where the engine accepts something and is quietly wrong about it.
+
+**Both doc paths are gated like every other route** — `X-Api-Key` required, `503` on a runner with
+no key. `DOCS_PUBLIC=true` opts out for local browsing or a trusted network; forgetting it leaves
+the docs closed, which is the safe direction. Swagger UI cannot send a key on its first fetch, so
+the browsable UI needs that flag; `curl -H "X-Api-Key: …" /openapi.json` does not.
+
+Docs live in this repo so a route change and its documentation are the same commit. The
+`specs/*/contracts/*.md` files in the iskra monorepo are spec-time snapshots kept for history;
+where they and `docs/api.md` disagree, `docs/api.md` is the live one.
 
 ### Worker modes
 
@@ -92,47 +93,35 @@ One worker process per job; `mode` in the job file selects the handler
 | `flash` | single-point TP/PH/PS flash, no flowsheet |
 | `pfd` | build/load → auto-layout → SkiaSharp PNG render |
 
-### Error taxonomy
-
-| Status | `error` | When |
-|---|---|---|
-| 400 | `INVALID_REQUEST` \| `INVALID_OBJECT` \| `INVALID_PROPERTY` \| `DOCUMENT_INVALID` \| `FLASH_INVALID` | bad templateId syntax, unknown override target, unsupported stream property, structurally invalid document, bad flash spec |
-| 404 | `TEMPLATE_NOT_FOUND` | unknown template id |
-| 401 | `UNAUTHORIZED` | `RUNNER_API_KEY` set and `X-Api-Key` missing/wrong (all routes except `GET /health`) |
-| 403 | `TEMPLATE_READONLY` | DELETE on a curated template |
-| 409 | `TEMPLATE_NAME_CONFLICT` | saveAsTemplate id exists (pass `overwrite:true`) or collides with a curated name |
-| 422 | `TEMPLATE_LOAD_FAILED` \| `BUILD_FAILED` \| `UNKNOWN_COMPOUND` \| `RENDER_FAILED` \| `OPTIMIZATION_INFEASIBLE` | engine cannot load/build/render, or no feasible optimization point |
-| 429 | `QUEUE_FULL` (+ `Retry-After`) | queue at capacity |
-| 504 | `SOLVE_TIMEOUT` | hard timeout; worker killed |
-| 500 | `WORKER_CRASH` | unexpected engine failure |
-
-Non-convergence is **not** an error: HTTP 200 with `converged:false`.
-
-A `saveAsTemplate` request against an unwritable `USER_TEMPLATES_PATH` is **not** an error
-(spec 011): the solve returns 200 and the `template` block carries `saved:false` with
-`reason: STORE_UNAVAILABLE` (or `WRITE_FAILED` if the dir is writable but the `.dwxmz` write
-itself failed). The solve is never blocked by a persistence side-effect.
-
 ## Environment variables
 
 | Var | Default | Purpose |
 |---|---|---|
 | `DWSIM_PATH` | `/opt/dwsim` | DWSIM install dir (runtime + compile-time) |
 | `TEMPLATES_PATH` | `/templates` | directory of curated `.dwxmz` reference plants (read-only) |
-| `USER_TEMPLATES_PATH` | `<TEMPLATES_PATH>/user` | writable directory for user-saved templates (`.dwxmz` + `.doc.json` provenance sidecars). On-prem only (steering §10 Q4); in SaaS the app's Postgres `flow_templates` table is the system of record and this path is unused for user state. An unwritable dir no longer fails the solve — see the error-taxonomy note above. |
+| `USER_TEMPLATES_PATH` | `<TEMPLATES_PATH>/user` | writable directory for user-saved templates (`.dwxmz` + `.doc.json` provenance sidecars). On-prem only (steering §10 Q4); in SaaS the app's Postgres `flow_templates` table is the system of record and this path is unused for user state. An unwritable dir does not fail the solve — see [`docs/api.md`](docs/api.md#post-flowsheetsbuild-solve). |
 | `WORKER_PATH` | `/app/worker/DwsimRunner.Worker.dll` | worker assembly |
-| `SOLVE_TIMEOUT_SECONDS` | `60` | hard per-solve timeout (cap 600) |
-| `MAX_CONCURRENT_SOLVES` | `6` | worker process pool size (SC-006 target) |
+| `SOLVE_TIMEOUT_SECONDS` | `60` | default per-solve timeout (caller cap 600) |
+| `MAX_CONCURRENT_SOLVES` | `4` (images set `6`) | worker process pool size (SC-006 target). The code falls back to 4; `Dockerfile` and both compose files set 6, so bare metal gets 4 unless you set it. `/health`'s `maxConcurrent` reports the effective value |
 | `CACHE_SIZE` | `256` | bounded LRU result cache entries |
-| `RUNNER_API_KEY` | _(unset)_ | optional shared API key; when set, `X-Api-Key` required on all routes except `GET /health` (FR-016). Clients read it from `SIM_RUNNER_API_KEY` |
+| `RUNNER_API_KEY` | _(unset — refuses)_ | **Required.** Shared API key; `X-Api-Key` is required on every route except `GET /health` (FR-016). Clients read it from `SIM_RUNNER_API_KEY`. **Unset or empty is a REFUSAL, not an opening**: every route except `GET /health` answers `503 AUTH_NOT_CONFIGURED` (FND-0002/FND-0075). Same rule as iskra-app's `checkApiAuth` — spec 032's "unset = open is not a gate" |
+| `MAX_REQUEST_WORK_SECONDS` | `3600` | aggregate solve-time budget for one `/compare` or `/optimize` request (`cases x timeoutSeconds`), refused up front. Bounding each case says nothing about the total: 30 x 600 s pins a worker slot for five hours (FND-0029) |
+| `WORKER_DEADLINE_SECONDS` | `900` | the WORKER's own wall-clock ceiling for one job. Independent of the caller's timeout, and above the 600 s the API allows, so it is a backstop rather than a second policy — a diverging solve dies inside the worker with no external supervisor present (FND-0103/FND-0104) |
+| `MAX_DOCUMENT_OBJECTS` | `500` | construction cap: objects per document (FND-0102). Largest document in the eval corpus: 47 |
+| `MAX_DOCUMENT_CONNECTIONS` | `1000` | construction cap: connections per document. Corpus max: 48 |
+| `MAX_DOCUMENT_REACTIONS` | `200` | construction cap: reactions per document. Corpus max: 4 |
+| `MAX_DOCUMENT_BYTES` | `204800` | construction cap: raw document size |
+| `DOCS_PUBLIC` | `false` | serve `/openapi.json` + `/docs` WITHOUT a key. Off by default: the docs are gated like every other route, and forgetting this flag leaves them closed. Turn it on for a trusted network or local browsing of the Swagger UI, which cannot send a key on its first fetch |
+| `BUILD_REF` | `unknown` | which runner build this is (Docker ARG), reported by `/health`. `dwsimVersion` is the DWSIM *library* version and cannot tell two runner builds apart |
 
 ## Testing
 
 Two tiers (Constitution IX, test-first):
 
 - **Tier A** — `tests/DwsimRunner.Api.Tests/`: API tests against a `FakeWorker`
-  stub (no DWSIM required, CI-safe). 38 tests cover routing, validation, error
-  taxonomy, cache, queue-cap, /compare, introspection, unitOps, and auth.
+  stub (no DWSIM required, CI-safe). Covers routing, validation, the error
+  taxonomy, cache, queue-cap, /compare, introspection, unitOps, auth, and the
+  generated OpenAPI document (`OpenApiContractTests`).
   ```bash
   dotnet test tests/DwsimRunner.Api.Tests
   ```

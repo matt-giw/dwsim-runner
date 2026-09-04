@@ -73,6 +73,71 @@ public class HealthContractTests
         Assert.Equal("unknown", h.GetProperty("buildRef").GetString());
     }
 
+    // ISK-104 — /health proves FLOWSHEET CONSTRUCTION, not that a file is on disk.
+    //
+    // Everything that can actually break lives in the worker, and the API process never loads
+    // DWSIM: a runner with a broken engine reports dwsimFound:true and fails every solve. The
+    // probe runs in the background on the first /health call, so the contract is two-part —
+    // the first answer is honestly `pending`, and a later one carries the fact.
+    private static async Task<JsonElement> SettledProbe(RunnerHost host)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            var h = await host.Client.GetFromJsonAsync<JsonElement>("/health");
+            var probe = h.GetProperty("flowsheetProbe");
+            if (probe.GetProperty("state").GetString() != "pending") return probe;
+            await Task.Delay(50);
+        }
+        throw new TimeoutException("flowsheet probe never left 'pending'");
+    }
+
+    [Fact]
+    public async Task Health_reports_the_probe_pending_before_it_answers()
+    {
+        using var host = new RunnerHost(new() { ["DWSIM_PATH"] = MakeFixtureDwsimDir() });
+
+        // The very first /health is answered without waiting on a worker — that is the whole
+        // reason the probe is backgrounded (Railway polls this route, and it skips the API key).
+        var h = await host.Client.GetFromJsonAsync<JsonElement>("/health");
+
+        Assert.Equal("pending", h.GetProperty("flowsheetProbe").GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, h.GetProperty("flowsheetProbe").GetProperty("checkedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task Health_proves_the_worker_can_construct_a_flowsheet()
+    {
+        using var host = new RunnerHost(new() { ["DWSIM_PATH"] = MakeFixtureDwsimDir() });
+
+        var probe = await SettledProbe(host);
+
+        Assert.Equal("ok", probe.GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, probe.GetProperty("error").ValueKind);
+        Assert.False(string.IsNullOrEmpty(probe.GetProperty("checkedAt").GetString()));
+    }
+
+    // The failure this exists for: the engine half is unrunnable while the file half looks fine.
+    // `dwsimFound` stays true and `ok` stays true — only the probe knows.
+    [Fact]
+    public async Task Health_probe_fails_and_names_its_cause_when_the_worker_cannot_run()
+    {
+        using var host = new RunnerHost(new()
+        {
+            ["DWSIM_PATH"] = MakeFixtureDwsimDir(),
+            ["WORKER_PATH"] = Path.Combine(Path.GetTempPath(), "no-such-worker-" + Guid.NewGuid() + ".dll"),
+        });
+
+        var probe = await SettledProbe(host);
+
+        Assert.Equal("failed", probe.GetProperty("state").GetString());
+        Assert.False(string.IsNullOrEmpty(probe.GetProperty("error").GetString()));
+
+        var h = await host.Client.GetFromJsonAsync<JsonElement>("/health");
+        Assert.True(h.GetProperty("ok").GetBoolean());          // the file is still on disk…
+        Assert.True(h.GetProperty("dwsimFound").GetBoolean());  // …which is exactly the blind spot
+    }
+
     [Fact]
     public async Task Health_not_ready_reports_ok_false_with_actionable_hint()
     {

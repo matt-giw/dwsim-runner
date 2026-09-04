@@ -44,6 +44,12 @@ internal static class ProtocolChannel
 
     private static int _saved = -1;
 
+    // FIRST WRITER WINS. Since the watchdog (Watchdog.cs) writes the timeout document from a
+    // TIMER THREAD while the main thread may be mid-solve and about to write its own, two
+    // documents could reach fd 1 — which is exactly the "exactly one JSON document on stdout"
+    // violation this whole class exists to prevent, arriving through its own remedy.
+    private static int _written;
+
     /// <summary>
     /// Moves fd 1 out of the way. Call before any DWSIM-typed or native code runs.
     /// A platform without libc (or a dup that fails) leaves the descriptors alone —
@@ -69,6 +75,8 @@ internal static class ProtocolChannel
     /// </summary>
     internal static void WriteResult(string json)
     {
+        if (Interlocked.Exchange(ref _written, 1) != 0) return;
+
         if (_saved < 0)
         {
             // Divert() did not run or did not take. Program.cs has already restored

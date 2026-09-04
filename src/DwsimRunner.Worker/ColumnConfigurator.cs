@@ -123,7 +123,9 @@ internal static class ColumnConfigurator
             case "maxIterations":
             {
                 var n = AsInt(raw);
-                if (n < 1) throw new InvalidOperationException($"maxIterations is {n}; it must be at least 1");
+                if (n is < 1 or > MaxIterationsCeiling)
+                    throw new InvalidOperationException(
+                        $"maxIterations is {n}; it must be between 1 and {MaxIterationsCeiling}");
                 col.MaxIterations = n;
                 return;
             }
@@ -173,8 +175,22 @@ internal static class ColumnConfigurator
             col.Stages[i].P = top + (bottom - top) * i / (n - 1);
     }
 
+    // The two request-supplied integers that buy engine work per unit. `maxIterations` is the
+    // ITERATION BOUND the wall-clock watchdog (Watchdog.cs) is the wall-clock half of; without it
+    // the deadline is the only thing standing between a caller and an arbitrarily long solve, and
+    // a bound that only ever fires as a timeout costs the full deadline every time. `numberOfStages`
+    // is FND-0102's cap in a second array — a column allocates per stage at construction.
+    //
+    // Both are ~10x anything real: spec 143 measured 216 solves across a 16/20/30-stage probe grid
+    // and found 1000 iterations sufficient for every case that converges at all (100 was the
+    // binding constraint; 1000 is the shipped default, DefaultMaxIterations below).
+    private const int MaxIterationsCeiling = 10_000;
+    private const int MaxStages = 300;
+
     private static void SetStageCount(DistillationColumn col, int n)
     {
+        if (n > MaxStages)
+            throw new InvalidOperationException($"numberOfStages is {n}; this runner allows at most {MaxStages}");
         if (n < 3) throw new InvalidOperationException($"numberOfStages is {n}; a column needs at least 3 stages");
         if (col.NumberOfStages != n)
         {
