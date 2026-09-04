@@ -50,6 +50,7 @@ export TEMPLATES_PATH=./templates
 export WORKER_PATH=./publish/worker/DwsimRunner.Worker.dll
 export SOLVE_TIMEOUT_SECONDS=60
 export MAX_CONCURRENT_SOLVES=6
+export RUNNER_API_KEY=local-dev-key   # REQUIRED — the runner fails closed without it
 dotnet publish/api/DwsimRunner.Api.dll   # listens on :8080
 ```
 
@@ -67,9 +68,10 @@ The spec and UI are generated from the endpoint definitions, so they cannot drif
 routes. `docs/api.md` covers what a schema cannot state: the caching and queueing rules, and the
 places where the engine accepts something and is quietly wrong about it.
 
-Both doc paths stay open even when `RUNNER_API_KEY` is set (like `/health`) — Swagger UI fetches
-the spec before its Authorize button exists to carry a key, so gating them breaks the UI rather
-than securing anything. `DOCS_ENABLED=false` removes both.
+**Both doc paths are gated like every other route** — `X-Api-Key` required, `503` on a runner with
+no key. `DOCS_PUBLIC=true` opts out for local browsing or a trusted network; forgetting it leaves
+the docs closed, which is the safe direction. Swagger UI cannot send a key on its first fetch, so
+the browsable UI needs that flag; `curl -H "X-Api-Key: …" /openapi.json` does not.
 
 Docs live in this repo so a route change and its documentation are the same commit. The
 `specs/*/contracts/*.md` files in the iskra monorepo are spec-time snapshots kept for history;
@@ -102,8 +104,14 @@ One worker process per job; `mode` in the job file selects the handler
 | `SOLVE_TIMEOUT_SECONDS` | `60` | default per-solve timeout (caller cap 600) |
 | `MAX_CONCURRENT_SOLVES` | `4` (images set `6`) | worker process pool size (SC-006 target). The code falls back to 4; `Dockerfile` and both compose files set 6, so bare metal gets 4 unless you set it. `/health`'s `maxConcurrent` reports the effective value |
 | `CACHE_SIZE` | `256` | bounded LRU result cache entries |
-| `RUNNER_API_KEY` | _(unset)_ | optional shared API key; when set, `X-Api-Key` required on all routes except `GET /health` (FR-016). Clients read it from `SIM_RUNNER_API_KEY` |
-| `DOCS_ENABLED` | `true` | serve `/openapi.json` + `/docs`. Set `false` to remove both entirely |
+| `RUNNER_API_KEY` | _(unset — refuses)_ | **Required.** Shared API key; `X-Api-Key` is required on every route except `GET /health` (FR-016). Clients read it from `SIM_RUNNER_API_KEY`. **Unset or empty is a REFUSAL, not an opening**: every route except `GET /health` answers `503 AUTH_NOT_CONFIGURED` (FND-0002/FND-0075). Same rule as iskra-app's `checkApiAuth` — spec 032's "unset = open is not a gate" |
+| `MAX_REQUEST_WORK_SECONDS` | `3600` | aggregate solve-time budget for one `/compare` or `/optimize` request (`cases x timeoutSeconds`), refused up front. Bounding each case says nothing about the total: 30 x 600 s pins a worker slot for five hours (FND-0029) |
+| `WORKER_DEADLINE_SECONDS` | `900` | the WORKER's own wall-clock ceiling for one job. Independent of the caller's timeout, and above the 600 s the API allows, so it is a backstop rather than a second policy — a diverging solve dies inside the worker with no external supervisor present (FND-0103/FND-0104) |
+| `MAX_DOCUMENT_OBJECTS` | `500` | construction cap: objects per document (FND-0102). Largest document in the eval corpus: 47 |
+| `MAX_DOCUMENT_CONNECTIONS` | `1000` | construction cap: connections per document. Corpus max: 48 |
+| `MAX_DOCUMENT_REACTIONS` | `200` | construction cap: reactions per document. Corpus max: 4 |
+| `MAX_DOCUMENT_BYTES` | `204800` | construction cap: raw document size |
+| `DOCS_PUBLIC` | `false` | serve `/openapi.json` + `/docs` WITHOUT a key. Off by default: the docs are gated like every other route, and forgetting this flag leaves them closed. Turn it on for a trusted network or local browsing of the Swagger UI, which cannot send a key on its first fetch |
 | `BUILD_REF` | `unknown` | which runner build this is (Docker ARG), reported by `/health`. `dwsimVersion` is the DWSIM *library* version and cannot tell two runner builds apart |
 
 ## Testing

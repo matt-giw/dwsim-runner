@@ -414,7 +414,10 @@ public sealed record SolveRequestDto(
 /// CONFLICTING_PARAMETERS, supplying neither is 400 INVALID_REQUEST.
 /// </param>
 /// <param name="Cases">Case name to its overrides. Between 1 and 25 entries.</param>
-/// <param name="TimeoutSeconds">Per case, not for the whole set.</param>
+/// <param name="TimeoutSeconds">
+/// Per case, not for the whole set. cases x timeoutSeconds is checked against the runner's
+/// aggregate budget before anything runs — over it is 400 WORK_BUDGET_EXCEEDED.
+/// </param>
 public sealed record CompareRequestDto(
     string? TemplateId, JsonElement? Document,
     Dictionary<string, List<PropertyOverride>?>? Cases, int? TimeoutSeconds);
@@ -430,7 +433,11 @@ public sealed record CompareRequestDto(
 /// <param name="Objective">The number to move.</param>
 /// <param name="Tolerance">Defaults to (max - min) * 1e-3.</param>
 /// <param name="MaxEvaluations">2..30, default 20.</param>
-/// <param name="TimeoutSeconds">Per evaluation, not for the whole search.</param>
+/// <param name="TimeoutSeconds">
+/// Per evaluation, not for the whole search. maxEvaluations x timeoutSeconds is checked against the
+/// runner's aggregate budget BEFORE the search starts — over it is 400 WORK_BUDGET_EXCEEDED, so the
+/// maximums of both are not simultaneously available.
+/// </param>
 public sealed record OptimizeRequestDto(
     string? TemplateId, JsonElement? Document,
     OptimizeVariableRequest? Variable, OptimizeObjectiveRequest? Objective,
@@ -488,7 +495,8 @@ public sealed record CompositionRequest(string? Basis, Dictionary<string, double
 /// carried as a raw JSON object and validated against the live engine catalog, because the legal
 /// unit-op types, ports and parameter names are a property of the running engine rather than of
 /// this assembly. It is declared so a caller can see the shape; read GET /catalog/unit-op-types
-/// for the parts it deliberately cannot express. Maximum serialized size is 200 KB.
+/// for the parts it deliberately cannot express. Objects, connections, reactions and raw size are
+/// all capped (defaults 500 / 1000 / 200 / 200 KB); over any of them is DOCUMENT_TOO_LARGE.
 /// </summary>
 /// <param name="SchemaVersion">Required. Must be 1.</param>
 /// <param name="Name">Free-text label for the flowsheet.</param>

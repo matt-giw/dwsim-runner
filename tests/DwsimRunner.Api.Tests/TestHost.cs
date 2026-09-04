@@ -11,6 +11,15 @@ namespace DwsimRunner.Api.Tests;
 
 internal sealed class RunnerHost : IDisposable
 {
+    /// <summary>
+    /// The key every host boots with. FND-0002/FND-0075: the runner now fails CLOSED, so an
+    /// unkeyed host answers 503 on every route and there is no "open" configuration left for a
+    /// suite to run against. Setting it here (and sending it by default below) is what keeps the
+    /// rest of the tier testing routes rather than testing the gate — AuthTests opts OUT of both
+    /// to prove the refusal.
+    /// </summary>
+    public const string DefaultApiKey = "test-runner-key";
+
     public WebApplicationFactory<Program> Factory { get; }
     public string TemplatesDir { get; }
     public string UserTemplatesDir { get; }
@@ -29,12 +38,18 @@ internal sealed class RunnerHost : IDisposable
             ["DWSIM_PATH"] = TemplatesDir,   // no DWSIM present → health reports dwsimFound:false
             ["SOLVE_TIMEOUT_SECONDS"] = "30",
             ["MAX_CONCURRENT_SOLVES"] = "4",
+            ["RUNNER_API_KEY"] = DefaultApiKey,
         };
         foreach (var kv in overrides ?? []) settings[kv.Key] = kv.Value;
 
         Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(settings)));
         Client = Factory.CreateClient();
+        // Sent on every request unless a test builds its own HttpRequestMessage. Whatever key the
+        // host actually booted with — so a host constructed with a different (or empty) key still
+        // gets a client that matches it.
+        if (settings["RUNNER_API_KEY"] is { Length: > 0 } key)
+            Client.DefaultRequestHeaders.Add("X-Api-Key", key);
         try { Client.GetAsync("/catalog/compounds").GetAwaiter().GetResult(); } catch { /* best effort */ }
     }
 

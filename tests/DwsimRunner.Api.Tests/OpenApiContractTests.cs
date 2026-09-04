@@ -172,27 +172,47 @@ public class OpenApiContractTests
     }
 
     [Fact]
-    public async Task Docs_are_reachable_without_the_api_key()
+    public async Task Docs_are_gated_like_every_other_route_by_default()
     {
-        // Swagger UI's first act is an unauthenticated fetch of the spec, before its Authorize
-        // button exists to carry a key — so gating these two paths makes the UI unusable rather
-        // than secure. They are open with the key set, exactly like /health.
-        using var host = new RunnerHost(new() { ["RUNNER_API_KEY"] = "secret" });
+        // An earlier draft exempted /openapi.json and /docs alongside /health, so the browser UI
+        // could load. FND-0002 removed the "unset = open" configuration from this service and says
+        // in writing that /health is the ONLY exemption; a second exemption list in the middleware
+        // is the shape of the defect it fixed. So the docs are gated, and DOCS_PUBLIC is an
+        // explicit opt-out whose FORGOTTEN state is closed.
+        using var host = new RunnerHost();
+        using var anonymous = host.Factory.CreateClient();   // no X-Api-Key
 
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/openapi.json")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/docs/index.html")).StatusCode);
+
+        // /health remains the one route a key is never needed for.
+        Assert.Equal(HttpStatusCode.OK, (await anonymous.GetAsync("/health")).StatusCode);
+
+        // ...and a keyed caller still gets them, which is what makes client generation possible.
         Assert.Equal(HttpStatusCode.OK, (await host.Client.GetAsync("/openapi.json")).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await host.Client.GetAsync("/docs/index.html")).StatusCode);
-
-        // ...and the gate itself still bites everywhere else.
-        Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.GetAsync("/templates")).StatusCode);
     }
 
     [Fact]
-    public async Task Docs_can_be_turned_off_entirely()
+    public async Task Docs_public_opens_them_and_nothing_else()
     {
-        using var host = new RunnerHost(new() { ["DOCS_ENABLED"] = "false" });
+        using var host = new RunnerHost(new() { ["DOCS_PUBLIC"] = "true" });
+        using var anonymous = host.Factory.CreateClient();
 
-        Assert.Equal(HttpStatusCode.NotFound, (await host.Client.GetAsync("/openapi.json")).StatusCode);
-        // The service itself is unaffected.
+        Assert.Equal(HttpStatusCode.OK, (await anonymous.GetAsync("/openapi.json")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await anonymous.GetAsync("/docs/index.html")).StatusCode);
+
+        // The flag widens the docs and NOTHING else — the gate still bites on real routes.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/templates")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Unkeyed_runner_refuses_the_docs_too()
+    {
+        // The 503 refusal reaches the docs as well: with no server key there is no configuration
+        // in which anything but /health answers.
+        using var host = new RunnerHost(new() { ["RUNNER_API_KEY"] = "" });
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await host.Client.GetAsync("/openapi.json")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await host.Client.GetAsync("/health")).StatusCode);
     }
 

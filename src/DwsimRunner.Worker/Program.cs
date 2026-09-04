@@ -7,8 +7,12 @@
 //   3 = template load failed
 //   4 = build failed / unknown compound (issues attached)
 //   5 = render failed (pfd)
+//   6 = the worker's own wall-clock deadline fired (Watchdog.cs)
 //   1 = unexpected crash (full detail on stderr only)
-// The API process owns timeouts and exit-code → HTTP mapping.
+// The API maps exit codes → HTTP. It ALSO applies a timeout of its own, but this process no
+// longer depends on that: FND-0103/FND-0104 were filed against the sentence that used to stand
+// here — "the API process owns timeouts" — because it names an enforcement point outside this
+// process that nothing here can verify. See Watchdog.cs.
 
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -24,6 +28,12 @@ DwsimResolver.Install();   // MUST run before any DWSIM-typed code is JIT'd
 var job = JsonSerializer.Deserialize<Job>(
     File.ReadAllText(args[0]),
     new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+
+// FND-0103/FND-0104 — armed before the first engine call and covering the WHOLE job, so a solve
+// that never converges dies here rather than waiting for a caller timeout that may not exist.
+using var deadline = Watchdog.Arm(
+    TimeSpan.FromSeconds(Watchdog.DeadlineSeconds(Environment.GetEnvironmentVariable)),
+    Environment.Exit);
 
 // The contract with the API is "exactly one JSON document on stdout" — but
 // DWSIM writes solver progress to the console. Redirect stdout to stderr for
