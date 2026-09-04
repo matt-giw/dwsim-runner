@@ -177,6 +177,43 @@ public class DocumentValidatorTests
         Assert.Contains(issues, i => i.Code == "DOCUMENT_TOO_LARGE");
     }
 
+    // FND-0102 (ISK-198) — the object array was capped and the other two construction arrays
+    // were not. Every entry becomes engine work in the worker (a live connection, a live
+    // reaction), so an unbounded array is unbounded work. The worker carries the same three caps
+    // because POST /flowsheets/pfd never runs this validator.
+
+    [Fact]
+    public void Too_many_connections_is_rejected()
+    {
+        var connections = string.Join(",", Enumerable.Range(0, 1001)
+            .Select(i => $$"""{ "from": "S{{i}}", "to": "U-1", "port": "Inlet" }"""));
+        var issues = Validate($$"""{ "schemaVersion": 1, "compounds": ["Methane"], "propertyPackage": "PR", "objects": [{ "tag": "S0", "kind": "materialStream" }], "connections": [{{connections}}] }""");
+        Assert.Contains(issues, i => i.Code == "DOCUMENT_TOO_LARGE" && i.Path == "connections");
+    }
+
+    [Fact]
+    public void Too_many_reactions_is_rejected()
+    {
+        var reactions = string.Join(",", Enumerable.Range(0, 201).Select(i => $$"""{ "tag": "R{{i}}" }"""));
+        var issues = Validate($$"""{ "schemaVersion": 1, "compounds": ["Methane"], "propertyPackage": "PR", "objects": [{ "tag": "S0", "kind": "materialStream" }], "connections": [], "reactions": [{{reactions}}] }""");
+        Assert.Contains(issues, i => i.Code == "DOCUMENT_TOO_LARGE" && i.Path == "reactions");
+    }
+
+    [Fact]
+    public void A_document_the_size_of_the_largest_real_one_is_not_rejected()
+    {
+        // Calibration guard. The biggest document in the eval corpus is 47 objects /
+        // 48 connections / 4 reactions; a cap that would refuse it is a cap set too low, and
+        // "flag it rather than guess low" is the standing instruction on these limits.
+        var objects = string.Join(",", Enumerable.Range(0, 47)
+            .Select(i => $$"""{ "tag": "S{{i}}", "kind": "materialStream" }"""));
+        var connections = string.Join(",", Enumerable.Range(0, 48)
+            .Select(i => $$"""{ "from": "S{{i}}", "to": "S0", "port": "Inlet" }"""));
+        var reactions = string.Join(",", Enumerable.Range(0, 4).Select(i => $$"""{ "tag": "R{{i}}" }"""));
+        var issues = Validate($$"""{ "schemaVersion": 1, "compounds": ["Methane"], "propertyPackage": "PR", "objects": [{{objects}}], "connections": [{{connections}}], "reactions": [{{reactions}}] }""");
+        Assert.DoesNotContain(issues, i => i.Code == "DOCUMENT_TOO_LARGE");
+    }
+
     // 005-unitop-parameter-application T006 / FR-FIX-004: outletTemperature
     // and heatDuty on the same heater/cooler are mutually exclusive — the
     // engine's CalcMode can only honor one of them.

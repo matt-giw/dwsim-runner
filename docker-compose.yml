@@ -9,9 +9,11 @@ services:
     environment:
       SOLVE_TIMEOUT_SECONDS: "60"
       MAX_CONCURRENT_SOLVES: "6"
-      # Optional shared API key (FR-016). Set to require X-Api-Key on all
-      # routes except GET /health. Unset = open (local dev).
-      RUNNER_API_KEY: "${RUNNER_API_KEY:-}"
+      # Shared API key (FR-016). REQUIRED — the runner fails closed: with no key set it
+      # answers 503 AUTH_NOT_CONFIGURED on every route except GET /health
+      # (FND-0002/FND-0075). The default below is a local-dev convenience, not a secret;
+      # override RUNNER_API_KEY for anything another host can reach.
+      RUNNER_API_KEY: "${RUNNER_API_KEY:-local-dev-key}"
       USER_TEMPLATES_PATH: /user-templates
     volumes:
       - ./templates:/templates:ro

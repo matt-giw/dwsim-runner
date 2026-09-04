@@ -12,6 +12,11 @@ services:
     environment:
       SOLVE_TIMEOUT_SECONDS: "60"
       MAX_CONCURRENT_SOLVES: "6"   # SC-006 target; tune per customer host
+      # Shared API key (FR-016). REQUIRED — the runner fails closed: with no key set it
+      # answers 503 AUTH_NOT_CONFIGURED on every route except GET /health
+      # (FND-0002/FND-0075). This file previously set no key at all, which meant every
+      # on-prem install ran open on 0.0.0.0:8080. Set RUNNER_API_KEY per install.
+      RUNNER_API_KEY: "${RUNNER_API_KEY:-local-dev-key}"
       USER_TEMPLATES_PATH: /user-templates
     volumes:
       - ${CUSTOMER_DWSIM:?set CUSTOMER_DWSIM to the local DWSIM install dir}:/opt/dwsim:ro
