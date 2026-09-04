@@ -588,6 +588,23 @@ async Task<CatalogModel> GetCatalogModelAsync(CancellationToken ct)
     return catalogModel ?? throw new InvalidOperationException("catalog parsed but the model is empty");
 }
 
+// 213 — the unit half of `ValidateStructural`, for the three endpoints that take a document and
+// have never validated one: /compare, /optimize and /flowsheets/pfd. It RUNS the existing
+// validator and keeps only INVALID_UNIT, so these endpoints gain the unit refusal and not the
+// twenty other structural verdicts — closing the reported hole without changing what any of them
+// already accepts. Catalog failure degrades exactly as build-solve's does: an empty model still
+// checks stream specs, whose vocabulary needs no catalog.
+async Task<string?> DocumentUnitRefusalAsync(JsonElement document, CancellationToken ct)
+{
+    CatalogModel model;
+    try { model = await GetCatalogModelAsync(ct); }
+    catch { model = new CatalogModel(); }
+    return DocumentValidator.ValidateStructural(document, model)
+        .FirstOrDefault(i => i.Code == "INVALID_UNIT") is { } issue
+        ? $"{issue.Path}: {issue.Message}"
+        : null;
+}
+
 app.MapPost("/flowsheets/validate", async (ValidateRequest req, HttpContext http, CancellationToken ct) =>
 {
     if (RequireDocument(req.Document) is { } bad) return bad;
@@ -759,6 +776,12 @@ app.MapPost("/flash", async (FlashRequestDto req, HttpContext http, Cancellation
     if (FlashPrecheck(flashEl) is { } issue)
         return ErrorResult(StatusCodes.Status400BadRequest, "FLASH_INVALID", issue);
 
+    // 213 — the pairing check above proves the spec is PRESENT; this proves its unit is one the
+    // engine's converter actually knows. Before the cache lookup as well as before the worker
+    // spawn: a refused request must never be answerable from a cached converged result.
+    if (FlashUnitRefusal(flashEl) is { } unitIssue)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", unitIssue);
+
     var cacheKey = ResultCache.KeyForDocument(flashEl, "flash|" + (catalogVersionKey ?? "unknown"));
     if (cache.TryGet(cacheKey, out var cached))
         return Results.Content(cached, "application/json");
@@ -779,6 +802,34 @@ app.MapPost("/flash", async (FlashRequestDto req, HttpContext http, Cancellation
     .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests)
     .Produces<ErrorResponse>(StatusCodes.Status500InternalServerError)
     .Produces<ErrorResponse>(StatusCodes.Status504GatewayTimeout);
+
+// 213 — every unit-bearing field on /flash, in one place, keyed to the quantity each one IS.
+// `vaporFraction` is dimensionless and `entropy` has no measured vocabulary, so both refuse ANY
+// unit rather than converting one: `RequireSi` in the worker hands whatever it is to
+// `ConvertToSI`, which silently returns it unchanged.
+static string? FlashUnitRefusal(JsonElement flash)
+{
+    foreach (var (field, kind) in new (string Field, string Kind)[]
+             {
+                 ("temperature", "temperature"), ("pressure", "pressure"), ("enthalpy", "enthalpy"),
+                 ("entropy", "entropy"), ("vaporFraction", "dimensionless"),
+             })
+        if (flash.TryGetProperty(field, out var el) && el.ValueKind == JsonValueKind.Object
+            && el.TryGetProperty("unit", out var u) && u.ValueKind == JsonValueKind.String
+            && DocumentValidator.UnitRefusal($"{field}.unit", u.GetString(), kind) is { } refusal)
+            return refusal;
+    return null;
+}
+
+// 213 — an override names an object and a property, never a quantity, so the union vocabulary is
+// the strongest check available before the template is loaded. Shared by /solve and /compare.
+static string? OverrideUnitRefusal(IEnumerable<PropertyOverride>? overrides)
+{
+    foreach (var o in overrides ?? [])
+        if (DocumentValidator.UnitRefusal($"override {o.Object}.{o.Property}", o.Unit, null) is { } refusal)
+            return refusal;
+    return null;
+}
 
 static string? FlashPrecheck(JsonElement flash)
 {
@@ -812,6 +863,12 @@ static string? FlashPrecheck(JsonElement flash)
 app.MapPost("/flowsheets/pfd", async (PfdRequest req, HttpContext http, CancellationToken ct) =>
 {
     if (RequireDocument(req.Document) is { } bad) return bad;
+
+    // 213 — a PFD builds the flowsheet (no solve), so `FlowsheetBuilder.ToSi` runs and a bad
+    // spelling still lands a wrongly-dimensioned value on the objects. It is drawn rather than
+    // reported, which makes it the quietest of the five holes, not the least real.
+    if (await DocumentUnitRefusalAsync(req.Document, ct) is { } pfdUnitIssue)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", pfdUnitIssue);
 
     var outcome = await RunDocumentModeAsync(req.Document, "pfd", TimeSpan.FromSeconds(defaultTimeout), null, ct);
     return PngOrError(http, outcome);
@@ -990,6 +1047,9 @@ app.MapPost("/solve", async (SolveRequestDto req, HttpContext http, Cancellation
     var (templateFile, error) = ResolveTemplate(req.TemplateId);
     if (error is not null) return error;
 
+    if (OverrideUnitRefusal(req.Overrides) is { } unitIssue)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", unitIssue);
+
     var timeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
     var outcome = await RunCaseAsync(req.TemplateId, templateFile!, req.Overrides ?? [], timeout, ct);
 
@@ -1030,6 +1090,15 @@ app.MapPost("/compare", async (CompareRequestDto req, HttpContext http, Cancella
     if (req.Cases is not { Count: >= 1 and <= 25 })
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
             "cases must contain between 1 and 25 entries");
+
+    // 213 — both halves of a compare carry units: the overrides that define each case, and the
+    // document form, which reaches FlowsheetBuilder without ever passing ValidateStructural.
+    foreach (var (name, overrides) in req.Cases)
+        if (OverrideUnitRefusal(overrides) is { } caseUnitIssue)
+            return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT",
+                $"case '{name}': {caseUnitIssue}");
+    if (hasDoc && await DocumentUnitRefusalAsync(req.Document!.Value, ct) is { } docUnitIssue)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", docUnitIssue);
 
     var compareTimeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
     if (WorkBudgetRefusal(req.Cases.Count, compareTimeout) is { } compareRefusal)
@@ -1109,6 +1178,12 @@ app.MapPost("/optimize", async (OptimizeRequestDto req, HttpContext http, Cancel
     if (!(variable.Min < variable.Max) || !double.IsFinite(variable.Min) || !double.IsFinite(variable.Max))
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
             "variable.min must be strictly less than variable.max");
+    // 213 — `variable.unit` rides every evaluation of the search, so an unrecognised spelling here
+    // is not one wrong answer but a whole sweep of them, each internally consistent.
+    if (DocumentValidator.UnitRefusal("variable.unit", variable.Unit, null) is { } varUnitIssue)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", varUnitIssue);
+    if (hasDoc && await DocumentUnitRefusalAsync(req.Document!.Value, ct) is { } optDocUnitIssue)
+        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", optDocUnitIssue);
     if (req.Objective is not { } objective || string.IsNullOrEmpty(objective.Object) || string.IsNullOrEmpty(objective.Property))
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
             "objective { object, property, direction } is required");
