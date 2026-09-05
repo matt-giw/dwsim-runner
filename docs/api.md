@@ -113,12 +113,34 @@ marker of one status.
 **Template ids must match `^[A-Za-z0-9._-]+$`.** Anything else is `400 INVALID_REQUEST` before
 any filesystem access. Ids are also re-checked for directory escape after path resolution.
 
-**Units are optional and SI is assumed when absent.** A unit that *is* given must be a spelling
-this runner knows or the document is refused with `INVALID_UNIT`. Do not transcribe the table
-into a client — read it from `GET /catalog/units`, which serves the same dictionary that does the
-accepting. (The reason is recorded in `DocumentValidator.cs`: DWSIM's `ConvertToSI` returns an
-unknown unit's value **unchanged**, so a unit the runner admits and the converter does not produces
-a number under the wrong dimension with no error at all.)
+**Units are optional and SI is assumed when absent.** An absent or empty `unit` means "already
+SI" and is always accepted. A unit that *is* given must be a spelling this runner knows, on **every
+entry point** — `/flash` specs, `/solve` and `/compare` overrides, `/optimize`'s variable, and the
+documents given to `/compare`, `/optimize` and `/flowsheets/pfd` — or the request is refused
+`400 INVALID_UNIT` before the engine sees it.
+
+**Why it is a refusal and not a best-effort conversion:** DWSIM's `Converter.ConvertToSI` returns
+the value **unchanged** for a spelling it does not know. Measured on `/flash`, `{value: 120,
+unit: "degC"}` was read as 120 **kelvin** and converged — the state echoed back −153.15 °C, vapour
+fraction 0, no error and no warning. A wrong answer wearing a result is the worst failure shape
+here, so an unrecognised spelling is refused by name.
+
+Two consequences worth knowing:
+
+- **A quantity with no measured vocabulary refuses every unit.** `entropy` accepts exactly
+  `kJ/[kg.K]`; anything else is refused rather than guessed at. Send a bare SI value with no unit.
+- **A dimensionless field takes no unit at all** — `vaporFraction` with any `unit` is refused.
+
+Do not transcribe the table into a client — read it from `GET /catalog/units`, which serves the
+same dictionary that does the accepting. The runner owns a **closed canonical vocabulary**; app
+spellings like `degC` / `barg` / `bara` are the client's to translate before the wire
+(`@iskra/document-mapper`'s `normalizeQuantity`), deliberately not aliased here, so one fact does
+not get two homes.
+
+An override names an object and a property rather than a quantity, and resolving the quantity needs
+a template the worker has not loaded yet — so `/solve` and `/compare` overrides are checked against
+the **union** of every accepted spelling. That is strictly weaker than the per-quantity check and
+still refuses `degC`.
 
 **Non-convergence is not an error.** A flowsheet that fails to converge is `200 OK` with
 `converged: false` and a populated `warnings` array. Reserve HTTP failure for "we could not run
@@ -134,6 +156,7 @@ your request"; a run that completed and diverged is an answer.
 | 400 | `CONFLICTING_PARAMETERS` | `templateId` **and** `document` both supplied to `/compare` or `/optimize` |
 | 400 | `DOCUMENT_INVALID` | document failed structural validation (carries `issues[]`) |
 | 400 | `FLASH_INVALID` | flash type unknown, or its required specs missing |
+| 400 | `INVALID_UNIT` | a unit spelling this runner does not know, on `/flash`, `/solve`, `/compare`, `/optimize` or `/flowsheets/pfd`. Also an `issues[]` code inside document validation |
 | 400 | `WORK_BUDGET_EXCEEDED` | `/compare` or `/optimize` asked for more total solve time than `MAX_REQUEST_WORK_SECONDS`. Refused **up front**, before taking a worker slot |
 | 401 | `UNAUTHORIZED` | `RUNNER_API_KEY` set, `X-Api-Key` missing or wrong |
 | 403 | `TEMPLATE_READONLY` | `DELETE` on a curated template |
@@ -640,7 +663,7 @@ a place in your document, and carry `tag` and `path` to point at it.
 | `UNRESOLVED_REFERENCE` | a `from`/`to` names no declared `tag` |
 | `MISSING_REQUIRED_PARAMETER` | a parameter the type requires is absent |
 | `INVALID_PARAMETER_VALUE` | a parameter value is out of range or the wrong type |
-| `INVALID_UNIT` | a unit spelling this runner does not accept — see `GET /catalog/units` |
+| `INVALID_UNIT` | a unit spelling this runner does not accept — see `GET /catalog/units`. Outside document validation the same check answers as a top-level `400 INVALID_UNIT` |
 | `COMPOSITION_NOT_NORMALIZED` | `fractions` do not sum to 1 |
 | `MISSING_REACTION_SET` | a reactor type declaring `requiresReactionSet` has none |
 | `CONFLICTING_PARAMETERS` | mutually exclusive parameters both set |

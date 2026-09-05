@@ -142,6 +142,36 @@ public class OpenApiContractTests
     }
 
     [Fact]
+    public async Task Unit_refusal_is_visible_in_the_document()
+    {
+        // 213 made INVALID_UNIT a top-level 400 on every entry point that takes a unit, not just an
+        // issues[] code inside document validation. It landed AFTER these docs did, and the docs went
+        // stale without anything noticing — which is the failure this whole file exists to prevent,
+        // so it gets a pin rather than a paragraph.
+        //
+        // A caller who cannot see this refuses nothing and sends `degC`, which the engine's converter
+        // returns UNCHANGED: 120 degC read as 120 K, converged, no warning.
+        using var host = new RunnerHost();
+        var spec = await SpecAsync(host);
+
+        var unit = spec.GetProperty("components").GetProperty("schemas")
+            .GetProperty("QuantityRequest").GetProperty("properties").GetProperty("unit");
+
+        Assert.True(unit.TryGetProperty("description", out var d),
+            "QuantityRequest.unit has no description — a caller cannot see that a bad spelling is refused");
+        Assert.Contains("INVALID_UNIT", d.GetString());
+
+        // And the routes that gained the refusal must declare a 400 at all.
+        foreach (var (path, verb) in new[]
+                 { ("/flash", "post"), ("/solve", "post"), ("/compare", "post"),
+                   ("/optimize", "post"), ("/flowsheets/pfd", "post") })
+            Assert.True(
+                spec.GetProperty("paths").GetProperty(path).GetProperty(verb)
+                    .GetProperty("responses").TryGetProperty("400", out _),
+                $"{verb.ToUpperInvariant()} {path} can answer 400 INVALID_UNIT and does not declare 400");
+    }
+
+    [Fact]
     public async Task Descriptions_reach_the_document_from_param_tags()
     {
         using var host = new RunnerHost();
