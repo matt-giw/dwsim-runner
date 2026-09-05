@@ -1575,7 +1575,11 @@ record WorkerRun(int? ExitCode, string Stdout, string Stderr);
 /// refused with INVALID_PROPERTY.
 /// </param>
 /// <param name="Value">The numeric value, interpreted in <c>unit</c>.</param>
-/// <param name="Unit">Omit for SI. Must be a spelling from GET /catalog/units.</param>
+/// <param name="Unit">
+/// Omit for SI. Checked against the UNION of every accepted spelling before the template loads —
+/// an override names an object and a property, not a quantity, so the per-quantity vocabulary is
+/// not resolvable yet. An unknown spelling is 400 INVALID_UNIT rather than a silent passthrough.
+/// </param>
 public record PropertyOverride(string Object, string Property, double Value, string? Unit);
 record CaseOutcome(int Status, string Body);
 

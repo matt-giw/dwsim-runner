@@ -495,7 +495,12 @@ public sealed record FlashRequestDto(
 
 /// <summary>A value with an optional unit.</summary>
 /// <param name="Value">The magnitude.</param>
-/// <param name="Unit">Omit for SI. Must be a spelling from GET /catalog/units.</param>
+/// <param name="Unit">
+/// Omit for SI. A spelling this runner does not know is refused with 400 INVALID_UNIT rather than
+/// converted — DWSIM's converter returns an unknown unit's value UNCHANGED, so guessing produces a
+/// number under the wrong dimension that converges. entropy accepts only kJ/[kg.K]; vaporFraction is
+/// dimensionless and takes no unit at all. Read the vocabulary from GET /catalog/units.
+/// </param>
 public sealed record QuantityRequest(double Value, string? Unit);
 
 /// <summary>A composition. Fractions must sum to 1.</summary>
