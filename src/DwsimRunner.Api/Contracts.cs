@@ -488,9 +488,22 @@ public sealed record OptimizeObjectiveRequest(string Object, string Property, st
 /// <param name="Enthalpy">Required by PH.</param>
 /// <param name="Entropy">Required by PS.</param>
 /// <param name="VaporFraction">Dimensionless molar vapour fraction. Required by PVF and TVF.</param>
+/// <param name="States">
+/// iskra spec 227 — a BATCH. Up to 100 spec sets evaluated against this base in ONE worker
+/// process: compounds, composition and package are set up once. A state's spec overrides the
+/// base's (share a pressure on the base, vary temperature per state). The response is then
+/// { results: [...] }, one entry per state in order — a flash result, or { error, message } for a
+/// state the engine refused, so a sweep with one bad point still answers the rest.
+/// </param>
 public sealed record FlashRequestDto(
     List<string>? Compounds, CompositionRequest? Composition, string? PropertyPackage,
     string? FlashType, QuantityRequest? Temperature, QuantityRequest? Pressure,
+    QuantityRequest? Enthalpy, QuantityRequest? Entropy, QuantityRequest? VaporFraction,
+    List<FlashStateRequest>? States = null);
+
+/// <summary>One state of a batch flash: the specs that vary. Anything omitted comes from the base request.</summary>
+public sealed record FlashStateRequest(
+    QuantityRequest? Temperature, QuantityRequest? Pressure,
     QuantityRequest? Enthalpy, QuantityRequest? Entropy, QuantityRequest? VaporFraction);
 
 /// <summary>A value with an optional unit.</summary>
