@@ -766,6 +766,10 @@ app.MapPost("/flowsheets/build-solve", async (BuildSolveRequest req, HttpContext
 // Flash calculation without a flowsheet (US4, FR-FLASH): thermodynamics run
 // in the worker's `flash` mode; the route only rejects structurally hopeless
 // requests (bad flashType/spec pairing) before paying for a process spawn.
+// iskra spec 227 — how many states one /flash may carry. A hundred TP points is a fine sweep
+// and a bounded worker: the process spawn is paid once, the engine work grows linearly.
+const int MaxFlashStates = 100;
+
 app.MapPost("/flash", async (FlashRequestDto req, HttpContext http, CancellationToken ct) =>
 {
     // Re-serialized to a JsonElement because the worker is handed the request verbatim and
@@ -794,7 +798,7 @@ app.MapPost("/flash", async (FlashRequestDto req, HttpContext http, Cancellation
     return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
 })
     .WithTags("Flash")
-    .WithSummary("Single-point flash. No flowsheet involved.")
+    .WithSummary("Single-point flash, or a batch of states against one base (`states`). No flowsheet involved.")
     .WithDescription("TP, PH, PS, PVF or TVF. TH and TS are unsupported - they kill the worker process. On a pure compound TVF is accepted but insensitive to vaporFraction; prefer PVF.")
     .Produces<FlashResponse>(StatusCodes.Status200OK)
     .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
@@ -809,16 +813,32 @@ app.MapPost("/flash", async (FlashRequestDto req, HttpContext http, Cancellation
 // `ConvertToSI`, which silently returns it unchanged.
 static string? FlashUnitRefusal(JsonElement flash)
 {
-    foreach (var (field, kind) in new (string Field, string Kind)[]
-             {
-                 ("temperature", "temperature"), ("pressure", "pressure"), ("enthalpy", "enthalpy"),
-                 ("entropy", "entropy"), ("vaporFraction", "dimensionless"),
-             })
-        if (flash.TryGetProperty(field, out var el) && el.ValueKind == JsonValueKind.Object
-            && el.TryGetProperty("unit", out var u) && u.ValueKind == JsonValueKind.String
-            && DocumentValidator.UnitRefusal($"{field}.unit", u.GetString(), kind) is { } refusal)
-            return refusal;
+    // The base, then every state of a batch (spec 227): a refused unit anywhere refuses the call.
+    if (Refusal(flash, "") is { } r) return r;
+    if (flash.TryGetProperty("states", out var states) && states.ValueKind == JsonValueKind.Array)
+    {
+        var i = 0;
+        foreach (var st in states.EnumerateArray())
+        {
+            if (Refusal(st, $"states[{i}].") is { } sr) return sr;
+            i++;
+        }
+    }
     return null;
+
+    static string? Refusal(JsonElement el, string prefix)
+    {
+        foreach (var (field, kind) in new (string Field, string Kind)[]
+                 {
+                     ("temperature", "temperature"), ("pressure", "pressure"), ("enthalpy", "enthalpy"),
+                     ("entropy", "entropy"), ("vaporFraction", "dimensionless"),
+                 })
+            if (el.TryGetProperty(field, out var q) && q.ValueKind == JsonValueKind.Object
+                && q.TryGetProperty("unit", out var u) && u.ValueKind == JsonValueKind.String
+                && DocumentValidator.UnitRefusal($"{prefix}{field}.unit", u.GetString(), kind) is { } refusal)
+                return refusal;
+        return null;
+    }
 }
 
 // 213 — an override names an object and a property, never a quantity, so the union vocabulary is
@@ -833,7 +853,6 @@ static string? OverrideUnitRefusal(IEnumerable<PropertyOverride>? overrides)
 
 static string? FlashPrecheck(JsonElement flash)
 {
-    bool Has(string name) => flash.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.Object;
     if (!flash.TryGetProperty("compounds", out var comps) || comps.ValueKind != JsonValueKind.Array
         || comps.GetArrayLength() == 0)
         return "compounds must be a non-empty array";
@@ -841,19 +860,43 @@ static string? FlashPrecheck(JsonElement flash)
         return "composition is required";
     var flashType = flash.TryGetProperty("flashType", out var ftEl) && ftEl.ValueKind == JsonValueKind.String
         ? ftEl.GetString()!.ToUpperInvariant() : "(missing)";
-    return flashType switch
+
+    // iskra spec 227 (ISK-266) — a BATCH: `states` carries N spec sets against one base. Each
+    // state is checked base-merged (a shared pressure may sit on the base while only T varies),
+    // and the whole batch is rejected here, before a spawn, if any state is hopeless. The worker
+    // sets up compounds + package once and evaluates every state; one spawn for a sweep step.
+    // The DTO serialises an absent list as null, which is "no batch", never "an empty batch".
+    if (flash.TryGetProperty("states", out var states) && states.ValueKind != JsonValueKind.Null)
     {
-        "TP" => Has("temperature") && Has("pressure") ? null : "TP flash requires temperature and pressure specs",
-        "PH" => Has("pressure") && Has("enthalpy") ? null : "PH flash requires pressure and enthalpy specs",
-        "PS" => Has("pressure") && Has("entropy") ? null : "PS flash requires pressure and entropy specs",
+        if (states.ValueKind != JsonValueKind.Array || states.GetArrayLength() == 0)
+            return "states must be a non-empty array of spec sets";
+        if (states.GetArrayLength() > MaxFlashStates)
+            return $"states carries {states.GetArrayLength()} spec sets; the limit is {MaxFlashStates}";
+        var i = 0;
+        foreach (var st in states.EnumerateArray())
+        {
+            if (st.ValueKind != JsonValueKind.Object) return $"states[{i}] must be an object of specs";
+            if (PairIssue(flashType, name => Has(st, name) || Has(flash, name)) is { } issue) return $"states[{i}]: {issue}";
+            i++;
+        }
+        return null;
+    }
+    return PairIssue(flashType, name => Has(flash, name));
+
+    static bool Has(JsonElement el, string name) => el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object;
+    static string? PairIssue(string flashType, Func<string, bool> has) => flashType switch
+    {
+        "TP" => has("temperature") && has("pressure") ? null : "TP flash requires temperature and pressure specs",
+        "PH" => has("pressure") && has("enthalpy") ? null : "PH flash requires pressure and enthalpy specs",
+        "PS" => has("pressure") && has("entropy") ? null : "PS flash requires pressure and entropy specs",
         // 120 US2 — measured additions. TH/TS are NOT here: they crash the engine (hard
         // worker death under STEAM and PR, measured 2026-08-01) — fixture records the
         // verdict. PSF/TSF: solids ledgered will-not-yet. NOTE this validator duplicates
         // the worker's switch by design (API answers in 50 ms without spawning a worker) —
         // extend BOTH or the API vetoes the worker, which is exactly the bug hunt that
         // produced this comment.
-        "PVF" => Has("pressure") && Has("vaporFraction") ? null : "PVF flash requires pressure and vaporFraction specs",
-        "TVF" => Has("temperature") && Has("vaporFraction") ? null : "TVF flash requires temperature and vaporFraction specs",
+        "PVF" => has("pressure") && has("vaporFraction") ? null : "PVF flash requires pressure and vaporFraction specs",
+        "TVF" => has("temperature") && has("vaporFraction") ? null : "TVF flash requires temperature and vaporFraction specs",
         _ => $"flashType '{flashType}' not supported (TP|PH|PS|PVF|TVF)",
     };
 }

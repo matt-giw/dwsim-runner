@@ -511,7 +511,11 @@ static class Modes
     // needed. Request validation per FR-VAL (compounds non-empty, fractions
     // normalize, flashType/spec pair); FLASH_INVALID covers all pre-engine
     // failures so the API surfaces a single taxonomy code.
-    public static FlashResult Flash(Job job)
+    // iskra spec 227 (ISK-266): returns a FlashResult, or a FlashBatchResult when the request
+    // carries `states` — the compounds, package and scratch feed are built ONCE and every state is
+    // evaluated against them. A state the engine refuses is an error ENTRY in its slot, never a
+    // failed batch: a sweep with one non-converging point still answers the other nine.
+    public static object Flash(Job job)
     {
         if (job.Flash is not { ValueKind: JsonValueKind.Object } flashEl)
             throw new WorkerInputException("FLASH_INVALID", "flash request is missing");
@@ -579,14 +583,50 @@ static class Modes
         // CalculateEquilibrium2 pulls the feed composition from the package's
         // CurrentMaterialStream (RET_VMOL) — a bare package NREs. Feed it a
         // scratch stream carrying the requested overall composition.
-        var feed = (IMaterialStream)fs.AddObject(
-            DWSIM.Interfaces.Enums.GraphicObjects.ObjectType.MaterialStream, 50, 50, "FLASH-FEED");
-        if (string.Equals(flash.Composition.Basis, "mass", StringComparison.OrdinalIgnoreCase))
-            feed.SetOverallMassComposition([.. compositionVector]);
-        else
-            feed.SetOverallMolarComposition([.. compositionVector]);
-        package.CurrentMaterialStream = feed;
+        var massBasis = string.Equals(flash.Composition.Basis, "mass", StringComparison.OrdinalIgnoreCase);
+        IMaterialStream NewFeed(string tag)
+        {
+            var f = (IMaterialStream)fs.AddObject(
+                DWSIM.Interfaces.Enums.GraphicObjects.ObjectType.MaterialStream, 50, 50, tag);
+            if (massBasis) f.SetOverallMassComposition([.. compositionVector]);
+            else f.SetOverallMolarComposition([.. compositionVector]);
+            package.CurrentMaterialStream = f;
+            return f;
+        }
+        var feed = NewFeed("FLASH-FEED");
 
+        if (flash.States is { Count: > 0 } states)
+        {
+            // A FRESH scratch feed per state. Measured 2026-09-06 on the first batch build: every
+            // state after the first died with a NullReferenceException inside CalculateEquilibrium2.
+            // The density harvest calculates the feed at the found state (`feedMs.Calculate`), and a
+            // feed the engine has calculated is no longer the bare composition carrier the package's
+            // CurrentMaterialStream must be for RET_VMOL. A new stream is cheap; the process is not.
+            var results = new List<object>(states.Count);
+            var i = 0;
+            foreach (var st in states)
+            {
+                if (i > 0) feed = NewFeed($"FLASH-FEED-{i}");
+                i++;
+                var merged = flash with
+                {
+                    Temperature = st.Temperature ?? flash.Temperature,
+                    Pressure = st.Pressure ?? flash.Pressure,
+                    Enthalpy = st.Enthalpy ?? flash.Enthalpy,
+                    Entropy = st.Entropy ?? flash.Entropy,
+                    VaporFraction = st.VaporFraction ?? flash.VaporFraction,
+                };
+                try { results.Add(FlashOne(merged, package, feed, resolvedCompounds)); }
+                catch (WorkerInputException ex) { results.Add(new ErrorDoc(ex.Code, ex.Message, ex.Detail)); }
+            }
+            return new FlashBatchResult(results);
+        }
+        return FlashOne(flash, package, feed, resolvedCompounds);
+    }
+
+    /// <summary>One state against an already-built package and feed. The body of the pre-227 method, verbatim.</summary>
+    private static FlashResult FlashOne(FlashRequest flash, IPropertyPackage package, IMaterialStream feed, List<string> resolvedCompounds)
+    {
         // Map flashType → FlashCalculationType + the two spec values in SI.
         DWSIM.Interfaces.Enums.FlashCalculationType calcType;
         double spec1, spec2;
@@ -861,7 +901,13 @@ record FlashRequest(List<string> Compounds, FlowComposition Composition, string 
     string FlashType, FlowQuantity? Temperature, FlowQuantity? Pressure,
     FlowQuantity? Enthalpy, FlowQuantity? Entropy,
     // 120 US2 — dimensionless molar vapor fraction spec for PVF/TVF.
-    FlowQuantity? VaporFraction = null);
+    FlowQuantity? VaporFraction = null,
+    // iskra spec 227 — a batch: N spec sets against this base; a state's spec overrides the base's.
+    List<FlashState>? States = null);
+record FlashState(FlowQuantity? Temperature, FlowQuantity? Pressure, FlowQuantity? Enthalpy,
+    FlowQuantity? Entropy, FlowQuantity? VaporFraction);
+/// <summary>One entry per state, in order: a FlashResult, or an ErrorDoc for a state the engine refused.</summary>
+record FlashBatchResult(List<object> Results);
 
 record FlashResult(double VaporFraction, double? TemperatureC, double? PressureBar,
     List<PhaseOut> Phases, double? EnthalpyKJKg, double? EntropyKJKgK,

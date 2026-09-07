@@ -194,12 +194,19 @@ switch (job.Mode?.ToLowerInvariant())
             Console.WriteLine("""{"error":"FLASH_INVALID","message":"compound '__bad' not found"}""");
             return Done(2);
         }
-        Console.WriteLine("""
-        {"vaporFraction":0.83,"temperatureC":0.0,"pressureBar":10.0,
-         "phases":[{"phase":"Vapor","molarFraction":0.83,"composition":{"Methane":0.58,"Ethane":0.42}},
-                   {"phase":"Liquid","molarFraction":0.17,"composition":{"Methane":0.11,"Ethane":0.89}}],
-         "enthalpyKJKg":-120.4,"entropyKJKgK":-1.02,"densityKgM3":52.31}
-        """.ReplaceLineEndings(""));
+        // iskra spec 227 — a batch answers one entry per state, in order; temperature -9999 is a
+        // synthetic engine refusal for THAT state only (the real worker's per-state catch).
+        if (job.Flash is { ValueKind: JsonValueKind.Object } batch
+            && batch.TryGetProperty("states", out var states) && states.ValueKind == JsonValueKind.Array)
+        {
+            var entries = states.EnumerateArray().Select(st =>
+                st.TryGetProperty("temperature", out var t) && t.TryGetProperty("value", out var tv) && tv.GetDouble() == -9999
+                    ? """{"error":"FLASH_INVALID","message":"flash calculation failed: synthetic refusal","detail":null}"""
+                    : FakeFlash.Canned);
+            Console.WriteLine("{\"results\":[" + string.Join(",", entries) + "]}");
+            break;
+        }
+        Console.WriteLine(FakeFlash.Canned);
         break;
 
     case "pfd":
@@ -232,6 +239,11 @@ switch (job.Mode?.ToLowerInvariant())
 }
 
 return Done(0);
+
+static class FakeFlash
+{
+    public const string Canned = """{"vaporFraction":0.83,"temperatureC":0.0,"pressureBar":10.0,"phases":[{"phase":"Vapor","molarFraction":0.83,"composition":{"Methane":0.58,"Ethane":0.42}},{"phase":"Liquid","molarFraction":0.17,"composition":{"Methane":0.11,"Ethane":0.89}}],"enthalpyKJKg":-120.4,"entropyKJKgK":-1.02,"densityKgM3":52.31}""";
+}
 
 record FakeJob(string? Template, List<FakeOverride>? Overrides, string? Mode,
                JsonElement? Document, JsonElement? Flash, string? SavePath);

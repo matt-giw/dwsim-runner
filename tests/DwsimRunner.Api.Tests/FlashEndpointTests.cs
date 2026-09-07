@@ -161,6 +161,85 @@ public class FlashEndpointTests
         Assert.Contains("__bad", body.GetProperty("message").GetString());
     }
 
+    // ── iskra spec 227 (ISK-266) — a batch of states in ONE call ─────────────────────────────
+    //
+    // Measured on iskra's development (2026-09-06): a study turn made 113 flash calls, ten per
+    // step, every one a worker spawn that loads DWSIM and builds a scratch flowsheet, 3.5 s each
+    // under load. `states` carries N spec sets against one base (compounds, composition, package,
+    // flashType); the worker sets up once and evaluates each state. One spawn for the step.
+    private static Dictionary<string, object?> BatchRequest(params object[] states)
+    {
+        var r = BaseRequest("TP");
+        r["states"] = states;
+        return r;
+    }
+
+    private static object TpState(double tC, double pBar) => new { temperature = Spec(tC, "C"), pressure = Spec(pBar, "bar") };
+
+    [Fact]
+    public async Task Batch_of_states_returns_one_result_per_state_from_one_spawn()
+    {
+        using var host = new RunnerHost();
+        var before = host.StartMarkers().Length;
+
+        var resp = await host.Client.PostAsJsonAsync("/flash", BatchRequest(TpState(0, 10), TpState(25, 10), TpState(50, 10)));
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>(Json);
+        var results = body.GetProperty("results").EnumerateArray().ToList();
+        Assert.Equal(3, results.Count);
+        Assert.Equal(0.83, results[0].GetProperty("vaporFraction").GetDouble(), 3);
+        Assert.Equal(before + 1, host.StartMarkers().Length);   // ONE spawn for three states
+    }
+
+    [Fact]
+    public async Task Batch_state_missing_its_spec_pair_is_400_without_a_spawn()
+    {
+        using var host = new RunnerHost();
+        var before = host.StartMarkers().Length;
+        var resp = await host.Client.PostAsJsonAsync("/flash", BatchRequest(TpState(0, 10), new { temperature = Spec(25, "C") }));
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>(Json);
+        Assert.Equal("FLASH_INVALID", body.GetProperty("error").GetString());
+        Assert.Contains("states[1]", body.GetProperty("message").GetString());
+        Assert.Equal(before, host.StartMarkers().Length);
+    }
+
+    [Fact]
+    public async Task Empty_batch_is_400_without_a_spawn()
+    {
+        using var host = new RunnerHost();
+        var resp = await host.Client.PostAsJsonAsync("/flash", BatchRequest());
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_state_the_engine_refuses_is_an_error_entry_and_the_others_still_answer()
+    {
+        using var host = new RunnerHost();
+        // The FakeWorker treats temperature -9999 as an engine refusal for that state only.
+        var resp = await host.Client.PostAsJsonAsync("/flash", BatchRequest(TpState(0, 10), TpState(-9999, 10)));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var results = (await resp.Content.ReadFromJsonAsync<JsonElement>(Json)).GetProperty("results").EnumerateArray().ToList();
+        Assert.True(results[0].TryGetProperty("vaporFraction", out _));
+        Assert.Equal("FLASH_INVALID", results[1].GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Identical_batches_are_cache_served_and_a_different_state_set_is_not()
+    {
+        using var host = new RunnerHost();
+        var first = await host.Client.PostAsJsonAsync("/flash", BatchRequest(TpState(0, 10), TpState(25, 10)));
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        var spawns = host.StartMarkers().Length;
+        var second = await host.Client.PostAsJsonAsync("/flash", BatchRequest(TpState(0, 10), TpState(25, 10)));
+        Assert.Equal(spawns, host.StartMarkers().Length);
+        Assert.Equal(await first.Content.ReadAsStringAsync(), await second.Content.ReadAsStringAsync());
+        var third = await host.Client.PostAsJsonAsync("/flash", BatchRequest(TpState(0, 10), TpState(30, 10)));
+        Assert.Equal(HttpStatusCode.OK, third.StatusCode);
+        Assert.Equal(spawns + 1, host.StartMarkers().Length);
+    }
+
     [Fact]
     public async Task Identical_flash_requests_are_cache_served_without_a_second_spawn()
     {
