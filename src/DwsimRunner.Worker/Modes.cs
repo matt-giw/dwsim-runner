@@ -583,19 +583,31 @@ static class Modes
         // CalculateEquilibrium2 pulls the feed composition from the package's
         // CurrentMaterialStream (RET_VMOL) — a bare package NREs. Feed it a
         // scratch stream carrying the requested overall composition.
-        var feed = (IMaterialStream)fs.AddObject(
-            DWSIM.Interfaces.Enums.GraphicObjects.ObjectType.MaterialStream, 50, 50, "FLASH-FEED");
-        if (string.Equals(flash.Composition.Basis, "mass", StringComparison.OrdinalIgnoreCase))
-            feed.SetOverallMassComposition([.. compositionVector]);
-        else
-            feed.SetOverallMolarComposition([.. compositionVector]);
-        package.CurrentMaterialStream = feed;
+        var massBasis = string.Equals(flash.Composition.Basis, "mass", StringComparison.OrdinalIgnoreCase);
+        IMaterialStream NewFeed(string tag)
+        {
+            var f = (IMaterialStream)fs.AddObject(
+                DWSIM.Interfaces.Enums.GraphicObjects.ObjectType.MaterialStream, 50, 50, tag);
+            if (massBasis) f.SetOverallMassComposition([.. compositionVector]);
+            else f.SetOverallMolarComposition([.. compositionVector]);
+            package.CurrentMaterialStream = f;
+            return f;
+        }
+        var feed = NewFeed("FLASH-FEED");
 
         if (flash.States is { Count: > 0 } states)
         {
+            // A FRESH scratch feed per state. Measured 2026-09-06 on the first batch build: every
+            // state after the first died with a NullReferenceException inside CalculateEquilibrium2.
+            // The density harvest calculates the feed at the found state (`feedMs.Calculate`), and a
+            // feed the engine has calculated is no longer the bare composition carrier the package's
+            // CurrentMaterialStream must be for RET_VMOL. A new stream is cheap; the process is not.
             var results = new List<object>(states.Count);
+            var i = 0;
             foreach (var st in states)
             {
+                if (i > 0) feed = NewFeed($"FLASH-FEED-{i}");
+                i++;
                 var merged = flash with
                 {
                     Temperature = st.Temperature ?? flash.Temperature,
