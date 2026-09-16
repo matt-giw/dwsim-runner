@@ -351,7 +351,8 @@ static class Modes
             UnitOps: unitOps,
             Warnings: engineWarnings,
             Build: build,
-            Template: null);
+            Template: null,
+            PropertyUnits: PhaseProperties.UnitsForResponse());
     }
 
     internal static StreamRow HarvestStream(DWSIM.Thermodynamics.Streams.MaterialStream ms)
@@ -403,7 +404,13 @@ static class Modes
                 HeatCapacityKJKgK: Round(p.Properties.heatCapacityCp, 0, 1, 4),
                 // Pa*s, magnitude ~1e-3..1e-5: fixed 3 decimals would DESTROY it (the entropy
                 // lesson a hundred lines down) — 8 decimals keeps ~4 significant figures.
-                ViscosityPaS: Round(p.Properties.viscosity, 0, 1, 8)));
+                ViscosityPaS: Round(p.Properties.viscosity, 0, 1, 8),
+                // 259 — everything else this phase carries, in SI, unconverted and unrounded.
+                // NOT rounded: the four named fields above each chose a decimal count for their own
+                // magnitude, and there is exactly one correct number of decimals per quantity. A
+                // single rounding rule across 60 quantities spanning 1e-5 (viscosity) to 1e5
+                // (pressure) would destroy the small ones — which is the entropy bug, generalised.
+                Properties: PhaseProperties.Harvest(p.Properties)));
         }
         var vaporFraction = blocks.FirstOrDefault(b => b.Name == "vapor")?.MoleFraction ?? 0.0;
         string? phaseLabel = blocks.Count == 0 ? null
@@ -435,7 +442,12 @@ static class Modes
             DensityKgM3:    Round(ms.Phases[0].Properties.density),
             CompositionMass: compMass.Count > 0 ? compMass : null,
             VaporFraction:  blocks.Count > 0 ? Math.Round(vaporFraction, 6) : null,
-            Phases:         blocks.Count > 0 ? blocks : null);
+            Phases:         blocks.Count > 0 ? blocks : null,
+            // 259 — the BULK bag, from the Mixture aggregate. `Phases[0]` is read here for the same
+            // reason the four named fields above read it: it IS the bulk. The block loop still skips
+            // "Mixture" by name, so this does not reintroduce the 120 bug of treating slot 0 as a
+            // real phase — it treats it as the aggregate it is.
+            Properties:     PhaseProperties.Harvest(ms.Phases[0].Properties));
 
         static double? Round(double? si, double offset = 0, double scale = 1, int digits = 3) =>
             si is double v && double.IsFinite(v) ? Math.Round(v * scale + offset, digits) : null;
@@ -894,7 +906,9 @@ record ValidationOutcome(bool Valid, List<IssueOut> Issues);
 
 record BuildReport(bool Converged, long ElapsedMs, List<StreamRow> Streams,
     List<EnergyRow> Energy, List<UnitOpRow> UnitOps, List<string> Warnings,
-    BuildInfo Build, TemplateOut? Template);
+    BuildInfo Build, TemplateOut? Template,
+    // 259 FR-003 — as on SolveResult: the SI unit of every `properties` key, once per response.
+    Dictionary<string, string>? PropertyUnits = null);
 record TemplateOut(string Id, string Source, bool SavedAtSave);
 
 record FlashRequest(List<string> Compounds, FlowComposition Composition, string PropertyPackage,
