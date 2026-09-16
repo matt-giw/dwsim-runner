@@ -220,9 +220,16 @@ public sealed record UnitsResponse(string? EngineVersion, IReadOnlyDictionary<st
 /// Non-fatal engine notes. Populated on divergence, and when the engine is outside the supported
 /// range.
 /// </param>
+/// <param name="PropertyUnits">
+/// The SI unit of every key a stream's or phase's <c>properties</c> bag can carry, as
+/// <c>member name -&gt; unit</c>. Sent ONCE per response rather than on every row: it is a constant
+/// of the engine version, and repeating it per phase per stream would be most of the payload.
+/// A key absent from this map is not harvested at all, so there is no unlabelled number.
+/// </param>
 public record SolveResponse(
     bool Converged, long ElapsedMs, List<StreamRowResponse> Streams,
-    List<EnergyRowResponse> Energy, List<UnitOpRowResponse> UnitOps, List<string> Warnings);
+    List<EnergyRowResponse> Energy, List<UnitOpRowResponse> UnitOps, List<string> Warnings,
+    Dictionary<string, string>? PropertyUnits);
 
 /// <summary>
 /// One material stream. A null on any nullable field means the engine did not report it — never
@@ -239,11 +246,19 @@ public record SolveResponse(
 /// <param name="CompositionMass">Mass fractions by compound — a separation is stated this way.</param>
 /// <param name="VaporFraction">Molar vapour fraction.</param>
 /// <param name="Phases">One block per phase actually present.</param>
+/// <param name="Properties">
+/// Every other property the engine computed for the BULK (mixture) phase, keyed by its DWSIM member
+/// name and valued in the engine's SI store, UNCONVERTED. Read the unit from the response's
+/// <c>propertyUnits</c> map — it is not encoded in the key. A member the engine did not populate is
+/// absent, never null and never zero. The named fields above are the same data curated and converted
+/// into the units they promise; where a quantity appears in both, they agree.
+/// </param>
 public sealed record StreamRowResponse(
     string Name, string? Phase, double? TemperatureC, double? PressureBar,
     double? MassFlowKgH, double? MolarFlowKmolH, Dictionary<string, double>? CompositionMol,
     double? DensityKgM3, Dictionary<string, double>? CompositionMass,
-    double? VaporFraction, List<StreamPhaseBlockResponse>? Phases);
+    double? VaporFraction, List<StreamPhaseBlockResponse>? Phases,
+    Dictionary<string, double>? Properties);
 
 /// <summary>One phase actually present, named in physics terms — never an engine slot index.</summary>
 /// <param name="Name">"vapor", "liquid", "liquid2" or "solid".</param>
@@ -253,9 +268,12 @@ public sealed record StreamRowResponse(
 /// <param name="MolecularWeight">Phase mean molecular weight.</param>
 /// <param name="HeatCapacityKJKgK">Phase Cp in kJ/(kg.K).</param>
 /// <param name="ViscosityPaS">Phase viscosity in Pa.s.</param>
+/// <param name="Properties">Every other property the engine computed for THIS phase, in SI,
+/// unconverted. Same rules as the stream-level bag; units in <c>propertyUnits</c>.</param>
 public sealed record StreamPhaseBlockResponse(
     string Name, double MoleFraction, Dictionary<string, double>? Composition,
-    double? DensityKgM3, double? MolecularWeight, double? HeatCapacityKJKgK, double? ViscosityPaS);
+    double? DensityKgM3, double? MolecularWeight, double? HeatCapacityKJKgK, double? ViscosityPaS,
+    Dictionary<string, double>? Properties);
 
 /// <summary>One energy stream.</summary>
 /// <param name="Name">The stream's tag.</param>
@@ -285,12 +303,14 @@ public sealed record UnitOpRowResponse(
 /// <param name="Warnings">Non-fatal engine notes.</param>
 /// <param name="Build">What construction did before the solve.</param>
 /// <param name="Template">Present only when saveAsTemplate was sent.</param>
+/// <param name="PropertyUnits">SI unit per <c>properties</c> key; see SolveResponse.</param>
 public sealed record BuildSolveResponse(
     bool Converged, long ElapsedMs,
     List<StreamRowResponse> Streams, List<EnergyRowResponse> Energy,
     List<UnitOpRowResponse> UnitOps, List<string> Warnings,
-    BuildInfoResponse Build, TemplateSaveResponse? Template)
-    : SolveResponse(Converged, ElapsedMs, Streams, Energy, UnitOps, Warnings);
+    BuildInfoResponse Build, TemplateSaveResponse? Template,
+    Dictionary<string, string>? PropertyUnits)
+    : SolveResponse(Converged, ElapsedMs, Streams, Energy, UnitOps, Warnings, PropertyUnits);
 
 /// <summary>What building the document produced, before solving it.</summary>
 /// <param name="ObjectsCreated">Streams and unit ops constructed.</param>

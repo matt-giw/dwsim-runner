@@ -130,7 +130,13 @@ record StreamRow(string Name, string? Phase, double? TemperatureC, double? Press
                  // Phase (above) is now DERIVED from these, never from Phases[0] — the Mixture
                  // phase's molarfraction is 1.0 by definition, which made the old label noise.
                  double? VaporFraction = null,
-                 List<StreamPhaseBlock>? Phases = null);
+                 List<StreamPhaseBlock>? Phases = null,
+                 // 259 — everything else the engine computed for the BULK (Mixture) phase, keyed by
+                 // the DWSIM member name and valued in the engine's SI store, UNCONVERTED. The
+                 // named fields above are the curated, converted set callers already read; this is
+                 // additive beside them and the two must agree (OpenApiContractTests).
+                 // Units are declared once per response, never here — see SolveResult.PropertyUnits.
+                 Dictionary<string, double>? Properties = null);
 
 // Physics-named phase blocks ("vapor"/"liquid"/"liquid2"/"solid") — never engine slot indexes.
 record StreamPhaseBlock(string Name, double MoleFraction,
@@ -138,7 +144,9 @@ record StreamPhaseBlock(string Name, double MoleFraction,
                         double? DensityKgM3 = null,
                         double? MolecularWeight = null,
                         double? HeatCapacityKJKgK = null,
-                        double? ViscosityPaS = null);
+                        double? ViscosityPaS = null,
+                        // 259 — the same bag, for THIS phase.
+                        Dictionary<string, double>? Properties = null);
 record EnergyRow(string Name, double? DutyKw);
 record UnitOpRow(string Name, string Type, double? PowerKw, double? DutyKw,
                  double? OutletTemperatureC, double? OutletPressureBar,
@@ -146,7 +154,11 @@ record UnitOpRow(string Name, string Type, double? PowerKw, double? DutyKw,
                  // configuration, read back off the engine object. Null on everything else.
                  string? SolvingMethod = null, int? MaxIterations = null);
 record SolveResult(bool Converged, long ElapsedMs, List<StreamRow> Streams,
-                   List<EnergyRow> Energy, List<UnitOpRow> UnitOps, List<string> Warnings);
+                   List<EnergyRow> Energy, List<UnitOpRow> UnitOps, List<string> Warnings,
+                   // 259 FR-003 — the SI unit of every key a `properties` bag can carry, ONCE.
+                   // It is a constant of the engine version; repeating it on every phase of every
+                   // stream would be most of the payload.
+                   Dictionary<string, string>? PropertyUnits = null);
 
 record ObjectInfo(string Tag, string Type, List<string> SettableProperties);
 record InventoryResult(List<ObjectInfo> Objects);
@@ -313,6 +325,7 @@ static class Solver
             }
         }
 
-        return new SolveResult(converged, sw.ElapsedMilliseconds, streams, energy, unitOps, warnings);
+        return new SolveResult(converged, sw.ElapsedMilliseconds, streams, energy, unitOps, warnings,
+                               PropertyUnits: PhaseProperties.UnitsForResponse());
     }
 }
