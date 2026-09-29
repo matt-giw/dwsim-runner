@@ -675,6 +675,9 @@ public static class FlowsheetBuilder
                 JsonValueKind.Number when p.UnitType == "temperatureDelta" => unit is { Length: > 0 }
                     ? UnitOpCatalog.ConvertDelta(unit, je.GetDouble())
                     : je.GetDouble(),
+                JsonValueKind.Number when p.UnitType == "voltage" => unit is { Length: > 0 }
+                    ? UnitOpCatalog.ConvertVoltage(unit, je.GetDouble())
+                    : je.GetDouble(),
                 JsonValueKind.Number => unit is { Length: > 0 }
                     ? DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI(unit, je.GetDouble())
                     : je.GetDouble(),

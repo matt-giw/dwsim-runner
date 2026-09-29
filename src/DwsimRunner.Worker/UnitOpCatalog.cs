@@ -741,6 +741,19 @@ public static class UnitOpCatalog
             "both) or F/R. A difference has no offset, so an absolute temperature unit cannot express one."),
     };
 
+    /// <summary>
+    /// Convert a voltage to volts. DWSIM's converter has no voltage family, so `ConvertToSI("kV", x)`
+    /// would return x unchanged; the runner scales it here. An unrecognised unit THROWS.
+    /// </summary>
+    public static double ConvertVoltage(string unit, double value) => unit switch
+    {
+        "V" => value,
+        "kV" => value * 1000.0,
+        "mV" => value * 0.001,
+        _ => throw new InvalidOperationException(
+            $"'{unit}' is not a voltage unit. Use V, kV or mV."),
+    };
+
     public static object ToPayload() => Types.Values
         .OrderBy(d => d.Type, StringComparer.Ordinal)
         .Select(d =>

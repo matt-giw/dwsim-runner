@@ -499,9 +499,8 @@ public sealed record OptimizeObjectiveRequest(string Object, string Property, st
 /// <param name="PropertyPackage">A package id from GET /catalog/property-packages, e.g. "NRTL".</param>
 /// <param name="FlashType">
 /// TP | PH | PS | PVF | TVF, each requiring its matching specs. TH and TS are NOT supported —
-/// they kill the worker process. On a PURE COMPOUND, TVF is accepted but insensitive to
-/// vaporFraction (saturation pressure does not depend on it), returning identical results for
-/// different fractions; prefer PVF, which is responsive.
+/// they kill the worker process. TVF is refused for a single compound, where the engine ignores
+/// vaporFraction; use PVF.
 /// </param>
 /// <param name="Temperature">Required by TP and TVF.</param>
 /// <param name="Pressure">Required by TP, PH, PS and PVF.</param>
