@@ -128,6 +128,26 @@ public class ElectrolyzerTests
         Assert.True(h2KmolH < expected * 10, "hydrogen is orders out — `voltage` is not the stack total");
     }
 
+    /// DWSIM's converter has no voltage family, so kV must be scaled by the runner: 0.988 kV is 988 V.
+    [SkippableFact]
+    public async Task Voltage_in_kV_solves_the_same_as_in_V()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        var inV = await Post(Doc(Faraday));
+        var inKv = await Post(Doc("""
+            "powerInput": { "value": 1000, "unit": "kW" },
+            "voltage": { "value": 0.988, "unit": "kV" },
+            "cellCount": 520
+            """));
+        Assert.True(inKv.GetProperty("converged").GetBoolean(),
+            "kV electrolyzer did not converge: " + inKv.GetProperty("warnings"));
+
+        var h2V = Stream(inV, "H2OUT").GetProperty("massFlowKgH").GetDouble();
+        var h2Kv = Stream(inKv, "H2OUT").GetProperty("massFlowKgH").GetDouble();
+        Assert.InRange(h2Kv, h2V * 0.999, h2V * 1.001);
+    }
+
     /// The synthesized power stream is the runner's business, not the caller's.
     [SkippableFact]
     public async Task The_power_stream_is_invisible_in_the_result()

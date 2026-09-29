@@ -660,7 +660,9 @@ static class Modes
                 spec2 = RequireSi(flash.Entropy, "entropy", "kJ/kg.K");
                 break;
             // 120 US2 — the remaining measurable pairs, by MEASUREMENT (2026-08-01, 9.0.5.0):
-            // - PVF/TVF work (TVF finds Psat(100 C) = 1.014 bar) and are exposed below.
+            // - PVF works and is exposed below. TVF is exposed for mixtures only: on a single
+            //   compound it ignores vaporFraction (returns saturated liquid for any value), so the
+            //   API's FlashPrecheck refuses it there.
             // - TH/TS (TemperatureEnthalpy/TemperatureEntropy) CRASH the engine — hard worker
             //   death, not an exception — under both STEAM and PR. Deliberately NOT exposed;
             //   the capability fixture records the crash verdict. Re-measure before re-adding.

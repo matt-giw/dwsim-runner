@@ -557,7 +557,11 @@ async Task<(int Status, string Body)> GetCatalogAsync(CancellationToken ct)
             catalogJson = node.ToJsonString();
             catalogVersionKey = versionKey;
             try { catalogModel = CatalogModel.Parse(catalogJson); }
-            catch { catalogModel = null; }   // structural validation best-effort; degrades gracefully
+            catch (Exception ex)
+            {
+                catalogModel = null;
+                app.Logger.LogError(ex, "catalog parsed as JSON but not as a CatalogModel; document validation will refuse until it does");
+            }
             return (StatusCodes.Status200OK, catalogJson);
         }
         catch (JsonException)
@@ -585,23 +589,35 @@ async Task<CatalogModel> GetCatalogModelAsync(CancellationToken ct)
     var (status, body) = await GetCatalogAsync(ct);
     if (status != StatusCodes.Status200OK)
         throw new InvalidOperationException($"catalog unavailable: HTTP {status}");
-    return catalogModel ?? throw new InvalidOperationException("catalog parsed but the model is empty");
+    return catalogModel ?? throw new InvalidOperationException("catalog was served but could not be parsed into a model");
+}
+
+// A document is never validated against an empty model: without the catalog the port and parameter
+// checks pass vacuously, so the request is refused instead.
+async Task<(CatalogModel? Model, IResult? Error)> CatalogModelOrErrorAsync(CancellationToken ct)
+{
+    try { return (await GetCatalogModelAsync(ct), null); }
+    catch (OperationCanceledException) { throw; }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "catalog model unavailable; refusing document validation");
+        return (null, ErrorResult(StatusCodes.Status503ServiceUnavailable, "ENGINE_UNAVAILABLE",
+            "the unit-op catalog could not be loaded, so the document cannot be validated; check /health"));
+    }
 }
 
 // 213 — the unit half of `ValidateStructural`, for the three endpoints that take a document and
 // have never validated one: /compare, /optimize and /flowsheets/pfd. It RUNS the existing
 // validator and keeps only INVALID_UNIT, so these endpoints gain the unit refusal and not the
 // twenty other structural verdicts — closing the reported hole without changing what any of them
-// already accepts. Catalog failure degrades exactly as build-solve's does: an empty model still
-// checks stream specs, whose vocabulary needs no catalog.
-async Task<string?> DocumentUnitRefusalAsync(JsonElement document, CancellationToken ct)
+// already accepts. An unavailable catalog is a 503, as for build-solve.
+async Task<IResult?> DocumentUnitRefusalAsync(JsonElement document, CancellationToken ct)
 {
-    CatalogModel model;
-    try { model = await GetCatalogModelAsync(ct); }
-    catch { model = new CatalogModel(); }
-    return DocumentValidator.ValidateStructural(document, model)
+    var (model, catalogError) = await CatalogModelOrErrorAsync(ct);
+    if (catalogError is not null) return catalogError;
+    return DocumentValidator.ValidateStructural(document, model!)
         .FirstOrDefault(i => i.Code == "INVALID_UNIT") is { } issue
-        ? $"{issue.Path}: {issue.Message}"
+        ? ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", $"{issue.Path}: {issue.Message}")
         : null;
 }
 
@@ -612,14 +628,11 @@ app.MapPost("/flowsheets/validate", async (ValidateRequest req, HttpContext http
 
     var semantic = req.Semantic ?? true;
 
-    // Structural validation against the catalog (collect-all). If the catalog
-    // engine is unavailable we still run the structural checks that don't need
-    // it (schema version, duplicate tags, units) — failure to fetch is silent.
-    CatalogModel model;
-    try { model = await GetCatalogModelAsync(ct); }
-    catch { model = new CatalogModel(); }
+    // Structural validation against the catalog (collect-all).
+    var (model, catalogError) = await CatalogModelOrErrorAsync(ct);
+    if (catalogError is not null) return catalogError;
 
-    var structuralIssues = DocumentValidator.ValidateStructural(documentEl, model);
+    var structuralIssues = DocumentValidator.ValidateStructural(documentEl, model!);
     if (structuralIssues.Any(i => i.Severity == "error"))
     {
         var issuesOut = structuralIssues.Select(i => new
@@ -688,10 +701,9 @@ app.MapPost("/flowsheets/build-solve", async (BuildSolveRequest req, HttpContext
     }
 
     // Structural validation must pass before the engine sees the document.
-    CatalogModel model;
-    try { model = await GetCatalogModelAsync(ct); }
-    catch { model = new CatalogModel(); }
-    var structuralIssues = DocumentValidator.ValidateStructural(documentEl, model);
+    var (model, catalogError) = await CatalogModelOrErrorAsync(ct);
+    if (catalogError is not null) return catalogError;
+    var structuralIssues = DocumentValidator.ValidateStructural(documentEl, model!);
     if (structuralIssues.Any(i => i.Severity == "error"))
     {
         http.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -799,7 +811,7 @@ app.MapPost("/flash", async (FlashRequestDto req, HttpContext http, Cancellation
 })
     .WithTags("Flash")
     .WithSummary("Single-point flash, or a batch of states against one base (`states`). No flowsheet involved.")
-    .WithDescription("TP, PH, PS, PVF or TVF. TH and TS are unsupported - they kill the worker process. On a pure compound TVF is accepted but insensitive to vaporFraction; prefer PVF.")
+    .WithDescription("TP, PH, PS, PVF or TVF. TH and TS are unsupported - they kill the worker process. TVF is refused (400 FLASH_INVALID) for a single compound, where the engine ignores vaporFraction; use PVF.")
     .Produces<FlashResponse>(StatusCodes.Status200OK)
     .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
     .Produces<ErrorResponse>(StatusCodes.Status422UnprocessableEntity)
@@ -861,6 +873,11 @@ static string? FlashPrecheck(JsonElement flash)
     var flashType = flash.TryGetProperty("flashType", out var ftEl) && ftEl.ValueKind == JsonValueKind.String
         ? ftEl.GetString()!.ToUpperInvariant() : "(missing)";
 
+    // On a pure compound the engine returns the same state for every vaporFraction at a given T,
+    // so a TVF answer there is wrong rather than merely imprecise.
+    if (flashType == "TVF" && comps.GetArrayLength() == 1)
+        return "TVF flash is not supported for a single compound: the engine ignores vaporFraction there. Use PVF instead";
+
     // iskra spec 227 (ISK-266) — a BATCH: `states` carries N spec sets against one base. Each
     // state is checked base-merged (a shared pressure may sit on the base while only T varies),
     // and the whole batch is rejected here, before a spawn, if any state is hopeless. The worker
@@ -910,8 +927,8 @@ app.MapPost("/flowsheets/pfd", async (PfdRequest req, HttpContext http, Cancella
     // 213 — a PFD builds the flowsheet (no solve), so `FlowsheetBuilder.ToSi` runs and a bad
     // spelling still lands a wrongly-dimensioned value on the objects. It is drawn rather than
     // reported, which makes it the quietest of the five holes, not the least real.
-    if (await DocumentUnitRefusalAsync(req.Document, ct) is { } pfdUnitIssue)
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", pfdUnitIssue);
+    if (await DocumentUnitRefusalAsync(req.Document, ct) is { } pfdUnitRefusal)
+        return pfdUnitRefusal;
 
     var outcome = await RunDocumentModeAsync(req.Document, "pfd", TimeSpan.FromSeconds(defaultTimeout), null, ct);
     return PngOrError(http, outcome);
@@ -1140,8 +1157,8 @@ app.MapPost("/compare", async (CompareRequestDto req, HttpContext http, Cancella
         if (OverrideUnitRefusal(overrides) is { } caseUnitIssue)
             return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT",
                 $"case '{name}': {caseUnitIssue}");
-    if (hasDoc && await DocumentUnitRefusalAsync(req.Document!.Value, ct) is { } docUnitIssue)
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", docUnitIssue);
+    if (hasDoc && await DocumentUnitRefusalAsync(req.Document!.Value, ct) is { } docUnitRefusal)
+        return docUnitRefusal;
 
     var compareTimeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
     if (WorkBudgetRefusal(req.Cases.Count, compareTimeout) is { } compareRefusal)
@@ -1225,8 +1242,8 @@ app.MapPost("/optimize", async (OptimizeRequestDto req, HttpContext http, Cancel
     // is not one wrong answer but a whole sweep of them, each internally consistent.
     if (DocumentValidator.UnitRefusal("variable.unit", variable.Unit, null) is { } varUnitIssue)
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", varUnitIssue);
-    if (hasDoc && await DocumentUnitRefusalAsync(req.Document!.Value, ct) is { } optDocUnitIssue)
-        return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", optDocUnitIssue);
+    if (hasDoc && await DocumentUnitRefusalAsync(req.Document!.Value, ct) is { } optDocUnitRefusal)
+        return optDocUnitRefusal;
     if (req.Objective is not { } objective || string.IsNullOrEmpty(objective.Object) || string.IsNullOrEmpty(objective.Property))
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
             "objective { object, property, direction } is required");
