@@ -2,9 +2,11 @@
 
   <!-- Worker unit tier (spec 141 T012/T013): exercises the parameter binder against the
        REAL DWSIM classes, so like the Worker it needs DWSIM assemblies at DWSIM_PATH for
-       both build and run. CI has no DWSIM and does not run this project (same reason the
-       Worker itself is not built there — see .github/workflows/ci.yml). Run it via the
-       docker SDK pattern with the image's DWSIM install mounted at /opt/dwsim:
+       both build and run. CI's `worker` job fetches the pinned DWSIM and COMPILES this
+       project alongside the Worker (ISK-442), but does not run it — see
+       .github/workflows/ci.yml. Run it locally with DWSIM_PATH pointing at
+       scripts/fetch-dwsim.sh's output, or via the docker SDK pattern with the image's
+       DWSIM install mounted at /opt/dwsim:
 
          docker cp [runner-container]:/opt/dwsim ./local-dwsim
          docker run [rm] -v $PWD:/src -v $PWD/local-dwsim:/opt/dwsim -w /src \

@@ -327,7 +327,7 @@ of record) and then `DELETE`s the runner-side copy.
 Object inventory without solving. Cached by template mtime.
 
 ```jsonc
-{ "objects": [ { "tag": "R-101", "type": "Reactor_Conversion",
+{ "objects": [ { "tag": "R-101", "type": "reactorConversion",
                  "settableProperties": ["OutletTemperature", "Pressure"] } ] }
 ```
 
@@ -489,7 +489,7 @@ target is `400 INVALID_REQUEST` from the worker, with its own message.
                   "heatCapacityKJKgK": 4.19, "viscosityPaS": 0.00035 } ]
   } ],
   "energy":  [ { "name": "E-1", "dutyKw": 63.9 } ],
-  "unitOps": [ { "name": "H-101", "type": "Heater", "powerKw": null, "dutyKw": 63.9,
+  "unitOps": [ { "name": "H-101", "type": "heater", "powerKw": null, "dutyKw": 63.9,
                  "outletTemperatureC": 80.0, "outletPressureBar": 1.01325,
                  "solvingMethod": null, "maxIterations": null } ],  // columns only
   "warnings": [] }

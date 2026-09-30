@@ -177,37 +177,8 @@ static class Solver
     private static (DWSIM.Automation.Automation3 Auto, DWSIM.Interfaces.IFlowsheet Fs) Load(string template)
     {
         var auto = new DWSIM.Automation.Automation3();
-        object? fsObj;
-        try { fsObj = auto.LoadFlowsheet(template); }
-        catch (Exception ex) { throw new TemplateLoadException($"failed to load '{Path.GetFileName(template)}': {ex.Message}"); }
-        var fs = (fsObj as DWSIM.Interfaces.IFlowsheet)
-                 ?? throw new TemplateLoadException($"failed to load '{Path.GetFileName(template)}'");
-        return (auto, fs);
+        return (auto, Engine.LoadTemplate(auto, template));
     }
-
-    // Stable, engine-agnostic type names crossing the HTTP boundary (FR-014).
-    private static string FriendlyType(object obj) => obj switch
-    {
-        DWSIM.Thermodynamics.Streams.MaterialStream => "materialStream",
-        DWSIM.UnitOperations.Streams.EnergyStream => "energyStream",
-        _ => obj.GetType().Name switch
-        {
-            "WaterElectrolyzer" => "waterElectrolyzer",
-            "Compressor" => "compressor",
-            "Pump" => "pump",
-            "Expander" or "Turbine" => "expander",
-            "Heater" => "heater",
-            "Cooler" => "cooler",
-            "HeatExchanger" => "heatExchanger",
-            "Valve" => "valve",
-            "Mixer" => "mixer",
-            "Splitter" => "splitter",
-            "Vessel" => "separator",
-            var n when n.Contains("Reactor", StringComparison.OrdinalIgnoreCase) => "reactor",
-            "Recycle" => "recycle",
-            var n => char.ToLowerInvariant(n[0]) + n[1..],
-        },
-    };
 
     private static readonly List<string> StreamProperties =
         ["massflow", "temperature", "pressure", "molarflow"];
@@ -219,7 +190,7 @@ static class Solver
         var objects = fs.SimulationObjects.Values
             .Select(o => new ObjectInfo(
                 Tag: o.GraphicObject.Tag,
-                Type: FriendlyType(o),
+                Type: Engine.FriendlyType(o),
                 SettableProperties: o is DWSIM.Thermodynamics.Streams.MaterialStream
                     ? StreamProperties : []))
             .OrderBy(o => o.Tag, StringComparer.Ordinal)
@@ -287,43 +258,9 @@ static class Solver
             warnings.Add(fs.ErrorMessage);
 
         // ── harvest results ────────────────────────────────────────────────
-        var streams = new List<StreamRow>();
-        var energy  = new List<EnergyRow>();
-        var unitOps = new List<UnitOpRow>();
-
-        foreach (var obj in fs.SimulationObjects.Values)
-        {
-            switch (obj)
-            {
-                case DWSIM.Thermodynamics.Streams.MaterialStream ms:
-                {
-                    // ONE harvest, shared with build-solve (Modes.HarvestStream). This was a
-                    // byte-for-byte copy of it, which is how a field gets added to one solve path
-                    // and not the other — the same duplication-drift this repo has been bitten by
-                    // before. Two callers, one definition.
-                    streams.Add(Modes.HarvestStream(ms));
-                    break;
-                }
-                case DWSIM.UnitOperations.Streams.EnergyStream es:
-                    // 099 US1 — a synthesized electrolyzer power stream is not in the DOCUMENT, so
-                    // reporting it would have the app fold back a stream its own side does not
-                    // contain. Hidden in BOTH harvests: the worker has two entry points, and fixing
-                    // one makes the answer depend on which one ran (Hazard 7).
-                    if (ElectrolyzerConfigurator.IsSynthesizedPower(es.GraphicObject.Tag)) break;
-                    energy.Add(new EnergyRow(es.GraphicObject.Tag,
-                        es.EnergyFlow is double ef && double.IsFinite(ef)
-                            ? Math.Round(ef, 1) : null)); // DWSIM SI energy flow is already kW
-                    break;
-
-                default:  // equipment-level results for downstream sizing (FR-015)
-                    // ONE harvest, shared with build-solve (Modes.HarvestUnitOp), for the same
-                    // reason the stream harvest above is shared: this was a byte-for-byte copy,
-                    // and 143's solver read-back would otherwise have appeared on one solve path
-                    // and not the other. 099 recorded the fork as debt; paying it is one line.
-                    unitOps.Add(Modes.HarvestUnitOp(obj));
-                    break;
-            }
-        }
+        // ONE harvest, shared with build-solve (Modes.Harvest): the stream, energy and unit-op rows
+        // a template solve reports cannot differ from a document solve's for the same flowsheet.
+        var (streams, energy, unitOps) = Modes.Harvest(fs);
 
         return new SolveResult(converged, sw.ElapsedMilliseconds, streams, energy, unitOps, warnings,
                                PropertyUnits: PhaseProperties.UnitsForResponse());
