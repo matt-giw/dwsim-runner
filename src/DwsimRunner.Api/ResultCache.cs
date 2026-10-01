@@ -64,16 +64,43 @@ public sealed class ResultCache(int capacity)
     public static string KeyFor(string templateId, string templateFile, IEnumerable<PropertyOverride> overrides)
     {
         var mtime = File.GetLastWriteTimeUtc(templateFile).Ticks;
-        var canon = string.Join(";", overrides
-            .OrderBy(o => o.Object, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(o => o.Property, StringComparer.OrdinalIgnoreCase)
-            .Select(o => string.Join('|',
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"{templateId}\n{mtime}\n{CanonicalOverrides(overrides)}")));
+    }
+
+    /// <summary>
+    /// Key for one document CASE (/compare and /optimize over a document, 120 US5): the canonical
+    /// document plus the canonical overrides, partitioned from plain build-solve keys and by engine
+    /// version.
+    /// </summary>
+    /// <remarks>
+    /// ISK-442. This key used to join the overrides in REQUEST order, with culture-dependent number
+    /// formatting and literal NUL bytes as separators — so two requests listing the same overrides
+    /// in a different order were two entries, while the template path (<see cref="KeyFor"/>) sorted
+    /// them. Both now read one canonical form.
+    /// </remarks>
+    public static string KeyForDocumentCase(JsonElement document, IEnumerable<PropertyOverride> overrides, string engineVersion) =>
+        KeyForDocument(document, $"case\n{CanonicalOverrides(overrides)}\n{engineVersion}");
+
+    /// <summary>
+    /// ONE canonical serialisation of an override set: sorted by target, case-folded on object/property/unit
+    /// (the template path's long-standing rule), round-trip invariant-culture values, and written as
+    /// JSON so no tag or unit spelling can collide with a separator.
+    /// </summary>
+    public static string CanonicalOverrides(IEnumerable<PropertyOverride> overrides) =>
+        JsonSerializer.Serialize(overrides
+            .Select(o => new[]
+            {
                 o.Object.ToLowerInvariant(),
                 o.Property.ToLowerInvariant(),
                 o.Value.ToString("R", CultureInfo.InvariantCulture),
-                o.Unit?.ToLowerInvariant() ?? "")));
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{templateId}\n{mtime}\n{canon}")));
-    }
+                o.Unit?.ToLowerInvariant() ?? "",
+            })
+            // Sorted by TARGET only, and stably: two overrides of the same object and property are
+            // applied in request order and the last one wins, so their relative order is part of
+            // the request's meaning and must stay in the key.
+            .OrderBy(k => k[0], StringComparer.Ordinal)
+            .ThenBy(k => k[1], StringComparer.Ordinal));
 
     /// <summary>Key for a flowsheet-document request (FR-BUILD-005): documents
     /// hash identically regardless of property order/whitespace (arrays stay

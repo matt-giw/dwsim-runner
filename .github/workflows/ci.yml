@@ -5,10 +5,14 @@
 # The real DWSIM-gated Tier B suite self-skips unless SIM_RUNNER_URL points at
 # a running runner with DWSIM, so it is not run here.
 #
-# The Worker project references DWSIM assemblies at compile time (Private=false)
-# and is therefore NOT built in CI — that's intentional. We build the Api and
-# FakeWorker only, run Tier A, and assert the Api publish output contains zero
-# DWSIM.* DLLs (Constitution IV: no conveyance).
+# The Worker project references DWSIM assemblies at compile time (Private=false),
+# so the `worker` job fetches the pinned DWSIM release into ./dwsim (never
+# committed, never published — see scripts/fetch-dwsim.sh) and compiles the
+# Worker and its unit tier against it. ISK-442: until then nothing in CI compiled
+# the Worker at all, so a change that broke it surfaced only in a Docker build.
+# The `build-and-test` job still builds the Api and FakeWorker with NO DWSIM on the
+# host, runs Tier A, and asserts the Api publish output contains zero DWSIM.* DLLs
+# (Constitution IV: no conveyance).
 name: ci
 
 on:
@@ -49,3 +53,33 @@ jobs:
             exit 1
           fi
           echo "publish/api is clean of DWSIM.* — no-conveyance OK"
+
+  worker:
+    name: Build Worker (against the pinned DWSIM)
+    runs-on: ubuntu-latest
+    env:
+      DWSIM_PATH: ${{ github.workspace }}/dwsim
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Keyed on the fetch script, which pins the DWSIM version: bumping the version is a
+      # script edit, which is a cache miss. The binaries live only in the runner's cache.
+      - name: Cache DWSIM
+        uses: actions/cache@v4
+        with:
+          path: dwsim
+          key: dwsim-${{ runner.os }}-${{ hashFiles('scripts/fetch-dwsim.sh') }}
+
+      - name: Fetch DWSIM
+        run: scripts/fetch-dwsim.sh
+
+      - name: Build Worker
+        run: dotnet build src/DwsimRunner.Worker/DwsimRunner.Worker.csproj -c Release
+
+      - name: Build Worker unit tier
+        run: dotnet build tests/DwsimRunner.Worker.Tests/DwsimRunner.Worker.Tests.csproj -c Release

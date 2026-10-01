@@ -689,6 +689,19 @@ public static class UnitOpCatalog
             [], false),
     }.ToDictionary(d => d.Type, d => d, StringComparer.Ordinal);
 
+    /// <summary>
+    /// Engine `ObjectType` → this runner's wire type: the REVERSE of <see cref="Types"/>, computed
+    /// from it and never stored beside it, so it cannot disagree with the allowlist. The first
+    /// declaration wins should two wire types ever share an engine type.
+    /// </summary>
+    private static readonly Dictionary<ObjectType, string> WireTypeByObjectType = Types.Values
+        .GroupBy(d => d.ObjectType)
+        .ToDictionary(g => g.Key, g => g.First().Type);
+
+    /// <summary>The wire type the catalog exposes for an engine type, or null when it exposes none.</summary>
+    public static string? WireTypeFor(ObjectType engineType) =>
+        WireTypeByObjectType.TryGetValue(engineType, out var wire) ? wire : null;
+
     /// <summary>Serializable catalog view (worker `catalog` mode payload).</summary>
     /// <summary>
     /// Engine enum member → wire name. `Delta_P` and `DeltaP` both become `deltaP`; `Kv_Liquid`

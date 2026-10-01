@@ -129,7 +129,11 @@ public sealed record ObjectsResponse(List<ObjectInfoResponse> Objects);
 
 /// <summary>One flowsheet object and what can be set on it.</summary>
 /// <param name="Tag">The object's tag — the <c>object</c> of a /solve override.</param>
-/// <param name="Type">The engine's type name for it.</param>
+/// <param name="Type">
+/// The wire type, from the same vocabulary as GET /catalog/unit-op-types (e.g. "reactorGibbs"), or
+/// materialStream / energyStream. A type the catalog does not expose reports its camel-cased engine
+/// class name.
+/// </param>
 /// <param name="SettableProperties">
 /// The legal <c>property</c> vocabulary for an override against this object. Anything else is
 /// refused with INVALID_PROPERTY.
@@ -282,7 +286,10 @@ public sealed record EnergyRowResponse(string Name, double? DutyKw);
 
 /// <summary>One unit op's computed results.</summary>
 /// <param name="Name">The unit op's tag.</param>
-/// <param name="Type">The engine's type name.</param>
+/// <param name="Type">
+/// The wire type, from the same vocabulary as GET /catalog/unit-op-types (e.g. "reactorGibbs"). A
+/// type the catalog does not expose reports its camel-cased engine class name.
+/// </param>
 /// <param name="PowerKw">Shaft power in kW, for rotating equipment.</param>
 /// <param name="DutyKw">Thermal duty in kW, for heat transfer equipment.</param>
 /// <param name="OutletTemperatureC">Computed outlet temperature.</param>

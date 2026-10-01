@@ -378,8 +378,8 @@ app.MapGet("/health", () =>
         templatesPath,
         templates = ListTemplateIds(),
         maxConcurrent,
-        maxEvaluations = 30,     // /optimize budget cap (runner-api-v2.md)
-        maxTimeoutSeconds = 600, // per-evaluation timeoutSeconds cap
+        maxEvaluations = MaxEvaluations,       // /optimize budget cap (runner-api-v2.md)
+        maxTimeoutSeconds = MaxTimeoutSeconds, // per-evaluation timeoutSeconds cap
         hint = found ? null :
             $"DWSIM not found at '{dwsimPath}'. Install DWSIM (https://dwsim.org) and set DWSIM_PATH " +
             "to its install directory (on-prem: mount the install at /opt/dwsim).",
@@ -673,7 +673,7 @@ app.MapPost("/flowsheets/build-solve", async (BuildSolveRequest req, HttpContext
 
     // CLAMPED, unlike /solve which falls back to the default on an out-of-range value. Both are
     // deliberate and they differ; docs/api.md says so out loud because the asymmetry is surprising.
-    var timeoutSeconds = req.TimeoutSeconds is { } to ? Math.Clamp(to, 5, 600) : 120;
+    var timeoutSeconds = req.TimeoutSeconds is { } to ? Math.Clamp(to, 5, MaxTimeoutSeconds) : 120;
 
     string? savePath = null;
     string? saveTemplateId = null;
@@ -758,7 +758,7 @@ app.MapPost("/flowsheets/build-solve", async (BuildSolveRequest req, HttpContext
             }
             body = node.ToJsonString();
         }
-        catch (JsonException) { /* body already validated by MinifyOrPassThrough */ }
+        catch (JsonException) { /* body already validated by ClassifyWorkerRun */ }
     }
     if (outcome.Status == StatusCodes.Status200OK && saveTemplateId is null)
         cache.Set(cacheKey, body);   // save requests are never cache-served (the side effect must run)
@@ -975,8 +975,8 @@ static IResult PngOrError(HttpContext http, CaseOutcome outcome)
         "application/json", statusCode: StatusCodes.Status422UnprocessableEntity);
 }
 
-// Document-mode worker spawn: writes {mode, document|flash, savePath?}
-// and maps exit codes (reusing the same concurrency gate + admission control as /solve).
+// One DOCUMENT-mode job: writes {mode, document|flash, savePath?, overrides?} and runs it through
+// the same admission control, SpawnWorkerAsync and ClassifyWorkerRun as a template case.
 // Worker payload shapes mirror the FakeWorker's expectations.
 async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, TimeSpan timeout, string? savePath, CancellationToken ct, string payloadKey = "document", List<PropertyOverride>? overrides = null)
 {
@@ -994,92 +994,18 @@ async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, 
             ErrorBody("QUEUE_FULL", $"queue is full ({maxAdmitted} requests admitted); retry shortly"));
     }
 
-    var jobFile = Path.Combine(Path.GetTempPath(), $"dwsim-job-{Guid.NewGuid():N}.json");
     try
     {
         var job = new Dictionary<string, object?> { ["mode"] = mode, [payloadKey] = document };
         if (savePath is not null) job["savePath"] = savePath;
         if (overrides is { Count: > 0 }) job["overrides"] = overrides;   // 120 US5 document cases
-        await File.WriteAllTextAsync(jobFile, JsonSerializer.Serialize(job, Program.JsonOpts), ct);
 
-        await gate.WaitAsync(ct);
-        try
-        {
-            var psi = new ProcessStartInfo("dotnet", $"\"{workerDll}\" \"{jobFile}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            psi.Environment["DWSIM_PATH"] = dwsimPath;
-            using var proc = Process.Start(psi)!;
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
-            var stderrTask = proc.StandardError.ReadToEndAsync(ct);
-
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(timeout);
-            try { await proc.WaitForExitAsync(cts.Token); }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                proc.Kill(entireProcessTree: true);
-                LogOutcome("SOLVE_TIMEOUT");
-                return new(StatusCodes.Status504GatewayTimeout,
-                    ErrorBody("SOLVE_TIMEOUT", $"solve timed out after {timeout.TotalSeconds}s"));
-            }
-
-            var stdout = await stdoutTask;
-            var stderr = await stderrTask;
-            if (proc.ExitCode != 0)
-                app.Logger.LogWarning("docmode {SolveId} worker exit {Code}, stderr: {Stderr}",
-                    solveId, proc.ExitCode, stderr);
-
-            switch (proc.ExitCode)
-            {
-                case 0:
-                    LogOutcome("ok");
-                    return new(StatusCodes.Status200OK, MinifyOrPassThrough(stdout, "WORKER_CRASH", "worker returned an invalid response"));
-                case 2:
-                    LogOutcome("INVALID_INPUT");
-                    return new(StatusCodes.Status400BadRequest,
-                        WorkerErrorOrDefault(stdout, "INVALID_REQUEST", "worker rejected the request input"));
-                case 4:
-                    LogOutcome("BUILD_FAILED");
-                    return new(StatusCodes.Status422UnprocessableEntity,
-                        WorkerErrorOrDefault(stdout, "BUILD_FAILED", "engine rejected construction"));
-                case 5:
-                    LogOutcome("RENDER_FAILED");
-                    return new(StatusCodes.Status422UnprocessableEntity,
-                        WorkerErrorOrDefault(stdout, "RENDER_FAILED", "PFD rendering failed"));
-                case 6:   // FND-0103/0104 — the worker's OWN deadline fired. Same taxonomy as the
-                          // API-side kill above: the caller asked for a solve and did not get one
-                          // in time, and which watchdog noticed is not their problem.
-                    LogOutcome("SOLVE_TIMEOUT");
-                    return new(StatusCodes.Status504GatewayTimeout,
-                        WorkerErrorOrDefault(stdout, "SOLVE_TIMEOUT", "worker exceeded its own deadline"));
-                default:
-                    app.Logger.LogError("docmode worker crashed (exit {Code}) for mode {Mode}: {Stderr}",
-                        proc.ExitCode, mode, stderr);
-                    LogOutcome("WORKER_CRASH");
-                    return new(StatusCodes.Status500InternalServerError,
-                        ErrorBody("WORKER_CRASH", "simulation worker failed unexpectedly"));
-            }
-        }
-        finally { gate.Release(); }
+        var run = await SpawnWorkerAsync(job, timeout, ct, gated: true);
+        var (outcome, label) = ClassifyWorkerRun(run, timeout, $"docmode {solveId}", $"mode {mode}");
+        LogOutcome(label);
+        return outcome;
     }
-    finally
-    {
-        Interlocked.Decrement(ref admitted);
-        try { File.Delete(jobFile); } catch { }
-    }
-}
-
-static string MinifyOrPassThrough(string stdout, string fallbackCode, string fallbackMessage)
-{
-    try
-    {
-        var node = System.Text.Json.Nodes.JsonNode.Parse(stdout)!;
-        return node.ToJsonString();
-    }
-    catch (JsonException) { return ErrorBody(fallbackCode, fallbackMessage); }
+    finally { Interlocked.Decrement(ref admitted); }
 }
 
 // Object inventory (FR-014): flowsheet load without solving, via the worker's
@@ -1110,7 +1036,7 @@ app.MapPost("/solve", async (SolveRequestDto req, HttpContext http, Cancellation
     if (OverrideUnitRefusal(req.Overrides) is { } unitIssue)
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_UNIT", unitIssue);
 
-    var timeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
+    var timeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= MaxTimeoutSeconds ? req.TimeoutSeconds.Value : defaultTimeout);
     var outcome = await RunCaseAsync(req.TemplateId, templateFile!, req.Overrides ?? [], timeout, ct);
 
     if (outcome.Status == StatusCodes.Status429TooManyRequests)
@@ -1160,7 +1086,7 @@ app.MapPost("/compare", async (CompareRequestDto req, HttpContext http, Cancella
     if (hasDoc && await DocumentUnitRefusalAsync(req.Document!.Value, ct) is { } docUnitRefusal)
         return docUnitRefusal;
 
-    var compareTimeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
+    var compareTimeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= MaxTimeoutSeconds ? req.TimeoutSeconds.Value : defaultTimeout);
     if (WorkBudgetRefusal(req.Cases.Count, compareTimeout) is { } compareRefusal)
         return compareRefusal;
 
@@ -1250,12 +1176,12 @@ app.MapPost("/optimize", async (OptimizeRequestDto req, HttpContext http, Cancel
     if (objective.Direction is not ("minimize" or "maximize"))
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
             "objective.direction must be 'minimize' or 'maximize'");
-    if (req.MaxEvaluations is < 2 or > 30)
+    if (req.MaxEvaluations is < 2 or > MaxEvaluations)
         return ErrorResult(StatusCodes.Status400BadRequest, "INVALID_REQUEST",
-            "maxEvaluations must be between 2 and 30");
+            $"maxEvaluations must be between 2 and {MaxEvaluations}");
     var maxEvaluations = req.MaxEvaluations ?? 20;
     var tolerance = req.Tolerance is > 0 ? req.Tolerance.Value : (variable.Max - variable.Min) * 1e-3;
-    var timeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= 600 ? req.TimeoutSeconds.Value : defaultTimeout);
+    var timeout = TimeSpan.FromSeconds(req.TimeoutSeconds is > 0 and <= MaxTimeoutSeconds ? req.TimeoutSeconds.Value : defaultTimeout);
 
     // FND-0029 — refuse an over-budget search UP FRONT rather than accepting it and running.
     // Golden section is sequential, so this request holds a solve slot for up to
@@ -1392,15 +1318,14 @@ static IResult? RequireDocument(JsonElement document) =>
 static string ErrorBody(string error, string message) =>
     JsonSerializer.Serialize(new { error, message });
 
-// One solve case end-to-end: cache → admission control → worker process →
 // 120 US5 — one DOCUMENT case: build-solve with per-case overrides, cached like every
-// other solve (KeyForDocument + canonicalized overrides), so document compares and
-// optimizations hit the same cache a repeated build-solve would.
+// other solve (canonical document + canonical overrides), so document compares and
+// optimizations hit the same cache a repeated build-solve would — and two requests that list
+// the same overrides in a different order are one entry, exactly as on the template path.
 async Task<CaseOutcome> RunDocumentCaseAsync(JsonElement document,
     List<PropertyOverride> overrides, TimeSpan timeout, CancellationToken ct)
 {
-    var overrideKey = string.Join("|", overrides.Select(o => $"{o.Object} {o.Property} {o.Value} {o.Unit}"));
-    var cacheKey = ResultCache.KeyForDocument(document, $"case|{overrideKey}|{catalogVersionKey ?? "unknown"}");
+    var cacheKey = ResultCache.KeyForDocumentCase(document, overrides, catalogVersionKey ?? "unknown");
     if (cache.TryGet(cacheKey, out var cached))
         return new(StatusCodes.Status200OK, cached);
 
@@ -1410,8 +1335,9 @@ async Task<CaseOutcome> RunDocumentCaseAsync(JsonElement document,
     return outcome;
 }
 
-// exit-code mapping. Shared by /solve (and /compare later). Returns the HTTP
-// status and the exact JSON body.
+// One TEMPLATE case end-to-end: cache → admission control → SpawnWorkerAsync → ClassifyWorkerRun.
+// Used by /solve, template /compare and /optimize cases, /templates/{id}/objects and the template
+// PFD. Returns the HTTP status and the exact JSON body.
 async Task<CaseOutcome> RunCaseAsync(string templateId, string templateFile,
     List<PropertyOverride> overrides, TimeSpan timeout, CancellationToken ct, string? mode = null)
 {
@@ -1436,166 +1362,82 @@ async Task<CaseOutcome> RunCaseAsync(string templateId, string templateFile,
             ErrorBody("QUEUE_FULL", $"solve queue is full ({maxAdmitted} requests admitted); retry shortly"));
     }
 
+    try
+    {
+        var run = await SpawnWorkerAsync(new { template = templateFile, overrides, mode }, timeout, ct, gated: true);
+        var (outcome, label) = ClassifyWorkerRun(run, timeout, $"solve {solveId}", $"template '{templateId}'");
+        if (outcome.Status == StatusCodes.Status200OK)
+        {
+            var converged = IsConverged(outcome.Body);
+            if (converged || mode is "inspect" or "pfd")   // inventories/renders are pure functions of the template file
+                cache.Set(cacheKey, outcome.Body);
+            label = converged ? "ok" : "not-converged";
+        }
+        LogOutcome(label);
+        return outcome;
+    }
+    finally { Interlocked.Decrement(ref admitted); }
+}
+
+static bool IsConverged(string body)
+{
+    try { return System.Text.Json.Nodes.JsonNode.Parse(body)?["converged"]?.GetValue<bool>() ?? false; }
+    catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { return false; }
+}
+
+// ISK-442 — THE worker spawn. One worker process, one job, one JSON document back; every route
+// that runs the worker comes through here (RunCaseAsync, RunDocumentModeAsync and the catalog
+// fetch). There used to be three copies of this, and they drifted: only one caught a failed
+// Process.Start, only one appended the DWSIM version warning, only one mapped exit code 3. The
+// spawn is now here and the exit-code mapping is ClassifyWorkerRun, so a behaviour fixed once is
+// fixed for every caller.
+//
+// ExitCode null = hard timeout (process killed). `gated` runs the spawn through the concurrency
+// semaphore. A worker that cannot be STARTED at all is WorkerStartFailed, which the classifier
+// reports as WORKER_CRASH rather than letting the exception escape as an unstructured 500.
+const int WorkerStartFailed = 127;
+
+async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, CancellationToken ct, bool gated)
+{
     // Job handed to the worker via a temp file (keeps argv clean, avoids stdin plumbing).
     var jobFile = Path.Combine(Path.GetTempPath(), $"dwsim-job-{Guid.NewGuid():N}.json");
     try
     {
-        await File.WriteAllTextAsync(jobFile, JsonSerializer.Serialize(new
-        {
-            template = templateFile,
-            overrides,
-            mode,
-        }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }), ct);
-
-        await gate.WaitAsync(ct);
-        try
-        {
-            var psi = new ProcessStartInfo("dotnet", $"\"{workerDll}\" \"{jobFile}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            psi.Environment["DWSIM_PATH"] = dwsimPath;
-
-            using var proc = Process.Start(psi)!;
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
-            var stderrTask = proc.StandardError.ReadToEndAsync(ct);
-
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(timeout);
-            try
-            {
-                await proc.WaitForExitAsync(cts.Token);
-            }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                proc.Kill(entireProcessTree: true);   // the hard timeout — solver hung or diverged
-                LogOutcome("SOLVE_TIMEOUT");
-                return new(StatusCodes.Status504GatewayTimeout,
-                    ErrorBody("SOLVE_TIMEOUT", $"solve timed out after {timeout.TotalSeconds}s"));
-            }
-
-            var stdout = await stdoutTask;
-            var stderr = await stderrTask;
-            if (proc.ExitCode == 0)
-                app.Logger.LogDebug("solve {SolveId} worker stderr: {Stderr}", solveId, stderr);
-            else
-                app.Logger.LogWarning("solve {SolveId} worker exit {Code}, stderr: {Stderr}", solveId, proc.ExitCode, stderr);
-
-            switch (proc.ExitCode)
-            {
-                case 0:
-                    // Normalize (minify) so /solve and /compare emit identical
-                    // bytes for the same result, and reject protocol violations.
-                    string body;
-                    bool converged;
-                    try
-                    {
-                        var node = System.Text.Json.Nodes.JsonNode.Parse(stdout)!;
-                        converged = node["converged"]?.GetValue<bool>() ?? false;
-
-                        // Engine outside the supported range solves best-effort
-                        // with an explicit warning (research.md R3).
-                        var (found, version, supported) = ProbeDwsim();
-                        if (found && !supported && node["warnings"] is System.Text.Json.Nodes.JsonArray warnings)
-                            warnings.Add($"DWSIM version {version ?? "unknown"} is outside supported range {SupportedRange} — results are best-effort");
-
-                        body = node.ToJsonString();
-                    }
-                    catch (JsonException)
-                    {
-                        app.Logger.LogError("worker stdout was not a JSON document for template '{Template}'", templateId);
-                        LogOutcome("WORKER_CRASH");
-                        return new(StatusCodes.Status500InternalServerError,
-                            ErrorBody("WORKER_CRASH", "simulation worker returned an invalid response"));
-                    }
-                    if (converged || mode is "inspect" or "pfd")   // inventories/renders are pure functions of the template file
-                        cache.Set(cacheKey, body);
-                    LogOutcome(converged ? "ok" : "not-converged");
-                    return new(StatusCodes.Status200OK, body);
-
-                case 2:   // invalid input (unknown object / property) — worker's error doc is client-safe
-                    LogOutcome("INVALID_INPUT");
-                    return new(StatusCodes.Status400BadRequest,
-                        WorkerErrorOrDefault(stdout, "INVALID_REQUEST", "worker rejected the request input"));
-
-                case 3:   // template exists but the engine could not load it
-                    LogOutcome("TEMPLATE_LOAD_FAILED");
-                    return new(StatusCodes.Status422UnprocessableEntity,
-                        WorkerErrorOrDefault(stdout, "TEMPLATE_LOAD_FAILED", "engine could not load the template"));
-
-                case 5:   // PFD render failed (pfd mode only)
-                    LogOutcome("RENDER_FAILED");
-                    return new(StatusCodes.Status422UnprocessableEntity,
-                        WorkerErrorOrDefault(stdout, "RENDER_FAILED", "PFD rendering failed"));
-
-                case 6:   // FND-0103/0104 — the worker's own deadline fired (see the docmode twin).
-                    LogOutcome("SOLVE_TIMEOUT");
-                    return new(StatusCodes.Status504GatewayTimeout,
-                        WorkerErrorOrDefault(stdout, "SOLVE_TIMEOUT", "worker exceeded its own deadline"));
-
-                default:  // crash — detail stays in server logs only
-                    app.Logger.LogError("worker crashed (exit {Code}) for template '{Template}': {Stderr}",
-                        proc.ExitCode, templateId, stderr);
-                    LogOutcome("WORKER_CRASH");
-                    return new(StatusCodes.Status500InternalServerError,
-                        ErrorBody("WORKER_CRASH", "simulation worker failed unexpectedly"));
-            }
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
-    finally
-    {
-        Interlocked.Decrement(ref admitted);
-        try { File.Delete(jobFile); } catch { /* best effort */ }
-    }
-}
-
-// One worker process, one job, one JSON document back. ExitCode null = hard
-// timeout (process killed). `gated` runs the spawn through the concurrency
-// semaphore. Shared by catalog/validate/build-solve/flash/pfd; /solve keeps
-// its own path in RunCaseAsync (identical mechanics plus cache/admission).
-async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, CancellationToken ct, bool gated)
-{
-    var jobFile = Path.Combine(Path.GetTempPath(), $"dwsim-job-{Guid.NewGuid():N}.json");
-    try
-    {
-        await File.WriteAllTextAsync(jobFile, JsonSerializer.Serialize(jobPayload, jobPayload.GetType(),
-            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }), ct);
+        await File.WriteAllTextAsync(jobFile,
+            JsonSerializer.Serialize(jobPayload, jobPayload.GetType(), Program.JsonOpts), ct);
 
         if (gated) await gate.WaitAsync(ct);
         try
         {
-            var psi = new ProcessStartInfo("dotnet", $"\"{workerDll}\" \"{jobFile}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            psi.Environment["DWSIM_PATH"] = dwsimPath;
-
-            using var proc = Process.Start(psi)!;
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
-            var stderrTask = proc.StandardError.ReadToEndAsync(ct);
-
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(timeout);
+            Process proc;
             try
             {
-                await proc.WaitForExitAsync(cts.Token);
+                proc = Process.Start(WorkerStartInfo(jobFile))
+                       ?? throw new InvalidOperationException("Process.Start returned no process");
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
             {
-                proc.Kill(entireProcessTree: true);
-                return new WorkerRun(null, "", "hard timeout");
+                return new WorkerRun(WorkerStartFailed, "", $"failed to start worker: {ex.Message}");
             }
-            return new WorkerRun(proc.ExitCode, await stdoutTask, await stderrTask);
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            return new WorkerRun(127, "", $"failed to start worker: {ex.Message}");
+
+            using (proc)
+            {
+                var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+                var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(timeout);
+                try
+                {
+                    await proc.WaitForExitAsync(cts.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    proc.Kill(entireProcessTree: true);   // the hard timeout — solver hung or diverged
+                    return new WorkerRun(null, "", "hard timeout");
+                }
+                return new WorkerRun(proc.ExitCode, await stdoutTask, await stderrTask);
+            }
         }
         finally
         {
@@ -1605,6 +1447,90 @@ async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, Canc
     finally
     {
         try { File.Delete(jobFile); } catch { /* best effort */ }
+    }
+}
+
+// The ONE ProcessStartInfo for the worker.
+ProcessStartInfo WorkerStartInfo(string jobFile)
+{
+    var psi = new ProcessStartInfo("dotnet", $"\"{workerDll}\" \"{jobFile}\"")
+    {
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+    };
+    psi.Environment["DWSIM_PATH"] = dwsimPath;
+    return psi;
+}
+
+// ISK-442 — THE exit-code → HTTP mapping (worker Program.cs taxonomy), the union of what the two
+// request paths each got right: exit 3 and exit 4 are mapped on every route, the version warning
+// is appended to every result that carries a `warnings` array, and an unparseable success is a
+// WORKER_CRASH on every route. Returns the outcome plus the label the caller logs. `logPrefix`
+// and `subject` only shape log lines.
+(CaseOutcome Outcome, string Label) ClassifyWorkerRun(WorkerRun run, TimeSpan timeout, string logPrefix, string subject)
+{
+    if (run.ExitCode is null)
+        return (new(StatusCodes.Status504GatewayTimeout,
+            ErrorBody("SOLVE_TIMEOUT", $"solve timed out after {timeout.TotalSeconds}s")), "SOLVE_TIMEOUT");
+
+    if (run.ExitCode == 0)
+        app.Logger.LogDebug("{Prefix} worker stderr: {Stderr}", logPrefix, run.Stderr);
+    else
+        app.Logger.LogWarning("{Prefix} worker exit {Code}, stderr: {Stderr}", logPrefix, run.ExitCode, run.Stderr);
+
+    switch (run.ExitCode)
+    {
+        case 0:
+            // Normalize (minify) so /solve and /compare emit identical bytes for the same result,
+            // and reject protocol violations.
+            try
+            {
+                var node = System.Text.Json.Nodes.JsonNode.Parse(run.Stdout)!;
+
+                // Engine outside the supported range solves best-effort with an explicit warning
+                // (research.md R3) — on every result that has somewhere to put it.
+                if (node["warnings"] is System.Text.Json.Nodes.JsonArray warnings)
+                {
+                    var (found, version, supported) = ProbeDwsim();
+                    if (found && !supported)
+                        warnings.Add($"DWSIM version {version ?? "unknown"} is outside supported range {SupportedRange} — results are best-effort");
+                }
+                return (new(StatusCodes.Status200OK, node.ToJsonString()), "ok");
+            }
+            catch (Exception ex) when (ex is JsonException or NullReferenceException)
+            {
+                app.Logger.LogError("{Prefix} worker stdout was not a JSON document for {Subject}", logPrefix, subject);
+                return (new(StatusCodes.Status500InternalServerError,
+                    ErrorBody("WORKER_CRASH", "worker returned an invalid response")), "WORKER_CRASH");
+            }
+
+        case 2:   // invalid input (unknown object / property) — worker's error doc is client-safe
+            return (new(StatusCodes.Status400BadRequest,
+                WorkerErrorOrDefault(run.Stdout, "INVALID_REQUEST", "worker rejected the request input")), "INVALID_INPUT");
+
+        case 3:   // template exists but the engine could not load it
+            return (new(StatusCodes.Status422UnprocessableEntity,
+                WorkerErrorOrDefault(run.Stdout, "TEMPLATE_LOAD_FAILED", "engine could not load the template")), "TEMPLATE_LOAD_FAILED");
+
+        case 4:   // build failed / unknown compound (issues attached)
+            return (new(StatusCodes.Status422UnprocessableEntity,
+                WorkerErrorOrDefault(run.Stdout, "BUILD_FAILED", "engine rejected construction")), "BUILD_FAILED");
+
+        case 5:   // PFD render failed
+            return (new(StatusCodes.Status422UnprocessableEntity,
+                WorkerErrorOrDefault(run.Stdout, "RENDER_FAILED", "PFD rendering failed")), "RENDER_FAILED");
+
+        case 6:   // FND-0103/0104 — the worker's OWN deadline fired. Same taxonomy as the API-side
+                  // kill above: the caller asked for a solve and did not get one in time, and which
+                  // watchdog noticed is not their problem.
+            return (new(StatusCodes.Status504GatewayTimeout,
+                WorkerErrorOrDefault(run.Stdout, "SOLVE_TIMEOUT", "worker exceeded its own deadline")), "SOLVE_TIMEOUT");
+
+        default:  // crash (or WorkerStartFailed) — detail stays in server logs only
+            app.Logger.LogError("{Prefix} worker crashed (exit {Code}) for {Subject}: {Stderr}",
+                logPrefix, run.ExitCode, subject, run.Stderr);
+            return (new(StatusCodes.Status500InternalServerError,
+                ErrorBody("WORKER_CRASH", "simulation worker failed unexpectedly")), "WORKER_CRASH");
     }
 }
 
@@ -1645,6 +1571,12 @@ record CaseOutcome(int Status, string Body);
 
 public partial class Program
 {
+    /// <summary>The per-solve timeoutSeconds cap on every route that accepts one (runner-api-v2.md).</summary>
+    public const int MaxTimeoutSeconds = 600;
+
+    /// <summary>The /optimize evaluation budget cap (runner-api-v2.md).</summary>
+    public const int MaxEvaluations = 30;
+
     // Shared camelCase serializer options for the new routes' inline payloads.
     public static readonly JsonSerializerOptions JsonOpts = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 } // WebApplicationFactory hook for tests
