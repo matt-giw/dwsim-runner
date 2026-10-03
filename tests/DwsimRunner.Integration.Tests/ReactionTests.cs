@@ -150,6 +150,12 @@ public class ReactionTests
         var outMass = outletTags.Sum(tag => BuildSolveTests.MassFlow(r, tag));
         Assert.InRange(outMass / feed, 0.99, 1.01);   // reaction conserves mass
 
+        // ISK-442 — the result names the reactor by the type the document asked for, never a
+        // collapsed "reactor".
+        var requestedType = JsonSerializer.Deserialize<JsonElement>(doc).GetProperty("objects").EnumerateArray()
+            .Single(o => o.GetProperty("tag").GetString() == "R-1").GetProperty("type").GetString();
+        Assert.Equal(requestedType, ReportedType(r, "R-1"));
+
         // Conversion (80 % of CO) and isothermal WGS equilibrium (K ≈ 20 at
         // 623 K) both must form product; kinetic extent depends on residence
         // time, so only mass balance is pinned there.
@@ -291,5 +297,55 @@ public class ReactionTests
         var inH2 = Moles(r, "FEED", "Hydrogen");
         var outH2 = Moles(r, "OUT_V", "Hydrogen") + Moles(r, "OUT_L", "Hydrogen");
         return inH2 > 0 ? 100 * (inH2 - outH2) / inH2 : 0;
+    }
+
+    private static string? ReportedType(JsonElement result, string tag) =>
+        result.GetProperty("unitOps").EnumerateArray()
+            .Single(u => u.GetProperty("name").GetString() == tag).GetProperty("type").GetString();
+
+    // Steam-methane reforming over a Gibbs reactor (169 made it minimize). No reactions are
+    // declared: a Gibbs reactor works from the element matrix.
+    private const string GibbsDoc = """
+    {
+      "schemaVersion": 1,
+      "name": "gibbs reactor integration",
+      "compounds": ["Methane", "Water", "Carbon monoxide", "Carbon dioxide", "Hydrogen"],
+      "propertyPackage": "PR",
+      "objects": [
+        { "tag": "FEED", "kind": "materialStream",
+          "spec": { "temperature": { "value": 850, "unit": "C" },
+                    "pressure": { "value": 20, "unit": "bar" },
+                    "molarFlow": { "value": 100, "unit": "kmol/h" },
+                    "composition": { "basis": "molar",
+                                     "fractions": { "Methane": 0.25, "Water": 0.75 } } } },
+        { "tag": "R-1", "kind": "unitOp", "type": "reactorGibbs" },
+        { "tag": "OUT_V", "kind": "materialStream" },
+        { "tag": "OUT_L", "kind": "materialStream" },
+        { "tag": "Q-RX", "kind": "energyStream" }
+      ],
+      "connections": [
+        { "from": "FEED", "to": "R-1", "port": "Inlet" },
+        { "from": "R-1", "to": "OUT_V", "port": "Vapor Outlet" },
+        { "from": "R-1", "to": "OUT_L", "port": "Liquid Outlet" },
+        { "from": "Q-RX", "to": "R-1", "port": "Energy Inlet" }
+      ]
+    }
+    """;
+
+    // ISK-442 acceptance: a solve with a Gibbs reactor reports `unitOps[].type == "reactorGibbs"`.
+    // Both worker harvests used to report every reactor as "reactor".
+    [SkippableFact]
+    public async Task Gibbs_reactor_solve_reports_reactorGibbs()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve",
+            BuildSolveTests.BuildSolveBody(GibbsDoc, timeoutSeconds: 180));
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var r = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync());
+        Assert.True(r.GetProperty("converged").GetBoolean(),
+            $"Gibbs reactor did not converge: {r.GetProperty("warnings")}");
+        Assert.Equal("reactorGibbs", ReportedType(r, "R-1"));
     }
 }

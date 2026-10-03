@@ -90,18 +90,19 @@ public class FlashPairsTests
         Assert.InRange(pvf.GetProperty("vaporFraction").GetDouble(), 0.49, 0.51);
     }
 
+    // On a pure compound the engine ignores vaporFraction under TVF, so the runner refuses it.
     [SkippableFact]
-    public async Task TVF_at_half_vapor_finds_the_saturation_pressure()
+    public async Task TVF_on_a_single_compound_is_refused()
     {
         Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
 
-        var tvf = await Flash(Req("TVF", new
+        var resp = await RunnerConnection.Client.PostAsJsonAsync("/flash", Req("TVF", new
         {
             temperature = new { value = 100.0, unit = "C" },
             vaporFraction = new { value = 0.5, unit = "" },
-        }));
-        // Water at 100 C, vf 0.5: saturation pressure ~1.01325 bar.
-        Assert.InRange(Num(tvf, "pressureBar"), 0.98, 1.05);
+        }), Json);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Contains("FLASH_INVALID", await resp.Content.ReadAsStringAsync());
     }
 
     [SkippableFact]

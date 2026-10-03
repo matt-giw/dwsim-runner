@@ -305,6 +305,26 @@ public class FlashEndpointTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task Tvf_on_a_single_compound_is_refused_before_the_worker()
+    {
+        using var host = new RunnerHost();
+        var req = BaseRequest("TVF");
+        req["compounds"] = new[] { "Water" };
+        req["composition"] = new { basis = "molar", fractions = new Dictionary<string, double> { ["Water"] = 1 } };
+        req["temperature"] = Spec(100, "C");
+        req["vaporFraction"] = Spec(0.5, "");
+        var spawnsBefore = host.StartMarkers().Length;
+
+        var resp = await host.Client.PostAsJsonAsync("/flash", req);
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>(Json);
+        Assert.Equal("FLASH_INVALID", body.GetProperty("error").GetString());
+        Assert.Contains("PVF", body.GetProperty("message").GetString());
+        Assert.Equal(spawnsBefore, host.StartMarkers().Length);
+    }
+
     [Theory]
     [InlineData("PSF")]   // solids ledgered will-not-yet
     [InlineData("TSF")]

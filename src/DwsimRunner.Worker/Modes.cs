@@ -40,15 +40,7 @@ static class Modes
                 CasNumber: SafeString(kv.Value, "CAS_Number")))
             .ToList();
 
-        var packageNames = ((System.Collections.IEnumerable)auto.AvailablePropertyPackages.Values)
-            .Cast<IPropertyPackage>().Select(pp => pp.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
-        if (packageNames.Count == 0)
-        {
-            var fs = auto.CreateFlowsheet();
-            if (fs is not null)
-                packageNames = fs.GetAvailablePropertyPackages().Cast<string>()
-                    .Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
-        }
+        var (packageNames, _) = Engine.PropertyPackageNames(auto);
         var packages = packageNames
             .OrderBy(n => n, StringComparer.Ordinal)
             .Select(name =>
@@ -91,11 +83,6 @@ static class Modes
     /// </remarks>
     private static List<EngineInventoryEntry> EngineInventory(Automation3 auto)
     {
-        // engine ObjectType name → the runner's wire type. Reverse of the allowlist, so it cannot lie.
-        var exposed = UnitOpCatalog.Types.Values
-            .GroupBy(d => d.ObjectType.ToString(), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First().Type, StringComparer.Ordinal);
-
         var instantiable = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var externals = new List<string>();
         try
@@ -148,17 +135,23 @@ static class Modes
             catch { return false; }
         }
 
+        // `ExposedAs` is `UnitOpCatalog.WireTypeFor` — the reverse of the allowlist, computed from it,
+        // so it cannot lie. It is the same lookup a solve uses to name a unit op's type.
         var entries = Enum.GetNames<ObjectType>()
-            .Select(name => new EngineInventoryEntry(
-                Name: name,
-                DisplayName: Humanize(name),
-                Source: "enum",
-                Instantiable: Enum.TryParse<ObjectType>(name, out var ot)
-                    ? CanBuild(ot)
-                    // Unparseable is a contradiction (the name came FROM the enum), so fall back to
-                    // the palette rather than silently reporting false.
-                    : instantiable.Contains(Key(name)),
-                ExposedAs: exposed.TryGetValue(name, out var wire) ? wire : null))
+            .Select(name =>
+            {
+                var parsed = Enum.TryParse<ObjectType>(name, out var ot);
+                return new EngineInventoryEntry(
+                    Name: name,
+                    DisplayName: Humanize(name),
+                    Source: "enum",
+                    Instantiable: parsed
+                        ? CanBuild(ot)
+                        // Unparseable is a contradiction (the name came FROM the enum), so fall back
+                        // to the palette rather than silently reporting false.
+                        : instantiable.Contains(Key(name)),
+                    ExposedAs: parsed ? UnitOpCatalog.WireTypeFor(ot) : null);
+            })
             .ToList();
 
         // Dedup on `Key(...)` for the same reason. `WaterElectrolyzer` is BOTH an `ObjectType` member
@@ -196,7 +189,9 @@ static class Modes
         {
             // auto.GetVersion() returns "DWSIM version 9.0.5.0 (...)".
             var raw = auto.GetVersion() ?? "";
-            var tokens = raw.Split([' '], StringSplitOptions.RemoveEmptyEntries);
+            // The char overload: `raw.Split([' '], ...)` is ambiguous (CS0121) on the .NET 8 SDK CI
+            // builds with, which is how the Worker came to build only on a newer SDK.
+            var tokens = raw.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             foreach (var t in tokens)
                 if (Version.TryParse(t, out var v) && v.Major > 0)
                     return v.ToString();
@@ -294,31 +289,7 @@ static class Modes
         }
 
         // ── harvest streams/energy/unitOps (reusing the spec-001 shape) ───────
-        var streams = new List<StreamRow>();
-        var energy = new List<EnergyRow>();
-        var unitOps = new List<UnitOpRow>();
-
-        foreach (var obj in fs.SimulationObjects.Values)
-        {
-            switch (obj)
-            {
-                case DWSIM.Thermodynamics.Streams.MaterialStream ms:
-                    streams.Add(HarvestStream(ms));
-                    break;
-                case DWSIM.UnitOperations.Streams.EnergyStream es:
-                    // 099 US1 — a synthesized electrolyzer power stream is not in the DOCUMENT, so
-                    // reporting it would have the app fold back a stream its own side does not
-                    // contain. Hidden in BOTH harvests: the worker has two entry points, and fixing
-                    // one makes the answer depend on which one ran (Hazard 7).
-                    if (ElectrolyzerConfigurator.IsSynthesizedPower(es.GraphicObject.Tag)) break;
-                    energy.Add(new EnergyRow(es.GraphicObject.Tag,
-                        es.EnergyFlow is double ef && double.IsFinite(ef) ? Math.Round(ef, 1) : null));
-                    break;
-                default:
-                    unitOps.Add(HarvestUnitOp(obj));
-                    break;
-            }
-        }
+        var (streams, energy, unitOps) = Harvest(fs);
 
         engineWarnings.AddRange(warnings.Select(w => $"[{w.Code}] {w.Message}"));
 
@@ -353,6 +324,42 @@ static class Modes
             Build: build,
             Template: null,
             PropertyUnits: PhaseProperties.UnitsForResponse());
+    }
+
+    /// <summary>
+    /// ONE result harvest over a solved flowsheet, shared by both worker entry points (`solve` in
+    /// Program.cs and `build-solve` here). The loop itself was the last copy left after the stream
+    /// and unit-op harvests were shared: the energy row lived in it twice, and a field added to one
+    /// copy would have appeared on one solve path and not the other (Hazard 7).
+    /// </summary>
+    internal static (List<StreamRow> Streams, List<EnergyRow> Energy, List<UnitOpRow> UnitOps) Harvest(IFlowsheet fs)
+    {
+        var streams = new List<StreamRow>();
+        var energy = new List<EnergyRow>();
+        var unitOps = new List<UnitOpRow>();
+
+        foreach (var obj in fs.SimulationObjects.Values)
+        {
+            switch (obj)
+            {
+                case DWSIM.Thermodynamics.Streams.MaterialStream ms:
+                    streams.Add(HarvestStream(ms));
+                    break;
+                case DWSIM.UnitOperations.Streams.EnergyStream es:
+                    // 099 US1 — a synthesized electrolyzer power stream is not in the DOCUMENT, so
+                    // reporting it would have the app fold back a stream its own side does not
+                    // contain.
+                    if (ElectrolyzerConfigurator.IsSynthesizedPower(es.GraphicObject.Tag)) break;
+                    energy.Add(new EnergyRow(es.GraphicObject.Tag,
+                        // DWSIM SI energy flow is already kW
+                        es.EnergyFlow is double ef && double.IsFinite(ef) ? Math.Round(ef, 1) : null));
+                    break;
+                default:  // equipment-level results for downstream sizing (FR-015)
+                    unitOps.Add(HarvestUnitOp(obj));
+                    break;
+            }
+        }
+        return (streams, energy, unitOps);
     }
 
     internal static StreamRow HarvestStream(DWSIM.Thermodynamics.Streams.MaterialStream ms)
@@ -475,7 +482,7 @@ static class Modes
             catch { return null; }
         }
 
-        var type = FriendlyType(obj);
+        var type = Engine.FriendlyType(obj);
         var deltaQ = Num(obj, "DeltaQ") ?? Num(obj, "Q");
         var isDriver = type is "compressor" or "pump" or "expander";
         return new UnitOpRow(
@@ -492,29 +499,6 @@ static class Modes
             SolvingMethod: Str(obj, "SolvingMethodName"),
             MaxIterations: Num(obj, "MaxIterations") is double mi ? (int)mi : null);
     }
-
-    private static string FriendlyType(object obj) => obj switch
-    {
-        DWSIM.Thermodynamics.Streams.MaterialStream => "materialStream",
-        DWSIM.UnitOperations.Streams.EnergyStream => "energyStream",
-        _ => obj.GetType().Name switch
-        {
-            "WaterElectrolyzer" => "waterElectrolyzer",
-            "Compressor" => "compressor",
-            "Pump" => "pump",
-            "Expander" or "Turbine" => "expander",
-            "Heater" => "heater",
-            "Cooler" => "cooler",
-            "HeatExchanger" => "heatExchanger",
-            "Valve" => "valve",
-            "Mixer" => "mixer",
-            "Splitter" => "splitter",
-            "Vessel" => "separator",
-            var n when n.Contains("Reactor", StringComparison.OrdinalIgnoreCase) => "reactor",
-            "Recycle" => "recycle",
-            var n => char.ToLowerInvariant(n[0]) + n[1..],
-        },
-    };
 
     // ── flash (T044) ────────────────────────────────────────────────────────
     // T-P / P-H / P-S flash without a flowsheet. The engine's
@@ -550,16 +534,9 @@ static class Modes
         // Headless engines often report an empty/null-named
         // AvailablePropertyPackages — fall back to the flowsheet-level listing
         // (same workaround as catalog mode).
-        var engineNames = ((System.Collections.IEnumerable)auto.AvailablePropertyPackages.Values)
-            .Cast<IPropertyPackage>().Select(p => p.Name)
-            .Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
-        var flowsheetForNames = engineNames.Count == 0 ? auto.CreateFlowsheet() : null;
-        if (flowsheetForNames is not null)
-            engineNames = flowsheetForNames.GetAvailablePropertyPackages().Cast<string>()
-                .Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        var (engineNames, flowsheetForNames) = Engine.PropertyPackageNames(auto);
         var ppName = PackageCatalog.Resolve(pp, engineNames)
-            ?? throw new WorkerInputException("FLASH_INVALID",
-                $"property package '{pp}' not found; available ids: {string.Join(", ", engineNames.Select(n => PackageCatalog.Classify(n).Id).Distinct().Order())}");
+            ?? throw new WorkerInputException("FLASH_INVALID", Engine.UnknownPackageMessage(pp, engineNames));
 
         // Resolve the engine compound names (case-insensitive) and build the
         // composition vector in the engine's compound order. Unknown compound
@@ -569,16 +546,8 @@ static class Modes
         var compositionVector = new List<double>();
         foreach (var requested in flash.Compounds)
         {
-            var match = available.FirstOrDefault(k => string.Equals(k, requested, StringComparison.OrdinalIgnoreCase));
-            if (match is null)
-            {
-                var suggestions = available
-                    .Where(k => k.Contains(requested, StringComparison.OrdinalIgnoreCase)
-                             || requested.Length >= 4 && k.StartsWith(requested[..4], StringComparison.OrdinalIgnoreCase))
-                    .Take(5).ToList();
-                throw new WorkerInputException("FLASH_INVALID",
-                    $"compound '{requested}' not found" + (suggestions.Count > 0 ? $"; did you mean: {string.Join(", ", suggestions)}?" : ""));
-            }
+            var match = Engine.ResolveCompound(available, requested, out var notFound)
+                ?? throw new WorkerInputException("FLASH_INVALID", notFound);
             resolvedCompounds.Add(match);
             compositionVector.Add(flash.Composition.Fractions.FirstOrDefault(f =>
                 string.Equals(f.Key, requested, StringComparison.OrdinalIgnoreCase)).Value);
@@ -646,21 +615,23 @@ static class Modes
         {
             case "TP":
                 calcType = DWSIM.Interfaces.Enums.FlashCalculationType.PressureTemperature;
-                spec1 = RequireSi(flash.Pressure, "pressure", "bar");
-                spec2 = RequireSi(flash.Temperature, "temperature", "K");
+                spec1 = RequireSi(flash.Pressure, "pressure");
+                spec2 = RequireSi(flash.Temperature, "temperature");
                 break;
             case "PH":
                 calcType = DWSIM.Interfaces.Enums.FlashCalculationType.PressureEnthalpy;
-                spec1 = RequireSi(flash.Pressure, "pressure", "bar");
-                spec2 = RequireSi(flash.Enthalpy, "enthalpy", "kJ/kg");
+                spec1 = RequireSi(flash.Pressure, "pressure");
+                spec2 = RequireSi(flash.Enthalpy, "enthalpy");
                 break;
             case "PS":
                 calcType = DWSIM.Interfaces.Enums.FlashCalculationType.PressureEntropy;
-                spec1 = RequireSi(flash.Pressure, "pressure", "bar");
-                spec2 = RequireSi(flash.Entropy, "entropy", "kJ/kg.K");
+                spec1 = RequireSi(flash.Pressure, "pressure");
+                spec2 = RequireSi(flash.Entropy, "entropy");
                 break;
             // 120 US2 — the remaining measurable pairs, by MEASUREMENT (2026-08-01, 9.0.5.0):
-            // - PVF/TVF work (TVF finds Psat(100 C) = 1.014 bar) and are exposed below.
+            // - PVF works and is exposed below. TVF is exposed for mixtures only: on a single
+            //   compound it ignores vaporFraction (returns saturated liquid for any value), so the
+            //   API's FlashPrecheck refuses it there.
             // - TH/TS (TemperatureEnthalpy/TemperatureEntropy) CRASH the engine — hard worker
             //   death, not an exception — under both STEAM and PR. Deliberately NOT exposed;
             //   the capability fixture records the crash verdict. Re-measure before re-adding.
@@ -668,13 +639,13 @@ static class Modes
             //   selection), so a solid-fraction flash would be a knob wired to nothing.
             case "PVF":
                 calcType = DWSIM.Interfaces.Enums.FlashCalculationType.PressureVaporFraction;
-                spec1 = RequireSi(flash.Pressure, "pressure", "bar");
-                spec2 = RequireSi(flash.VaporFraction, "vaporFraction", "");
+                spec1 = RequireSi(flash.Pressure, "pressure");
+                spec2 = RequireSi(flash.VaporFraction, "vaporFraction");
                 break;
             case "TVF":
                 calcType = DWSIM.Interfaces.Enums.FlashCalculationType.TemperatureVaporFraction;
-                spec1 = RequireSi(flash.Temperature, "temperature", "K");
-                spec2 = RequireSi(flash.VaporFraction, "vaporFraction", "");
+                spec1 = RequireSi(flash.Temperature, "temperature");
+                spec2 = RequireSi(flash.VaporFraction, "vaporFraction");
                 break;
             default:
                 throw new WorkerInputException("FLASH_INVALID", $"flashType '{flash.FlashType}' not supported (TP|PH|PS|PVF|TVF)");
@@ -798,13 +769,12 @@ static class Modes
         static double? RoundBar(double? pa) => pa is double v && double.IsFinite(v) ? Math.Round(v * 1e-5, 6) : null;
     }
 
-    private static double RequireSi(FlowQuantity? q, string name, string siUnit)
-    {
-        if (q is null) throw new WorkerInputException("FLASH_INVALID", $"{name} spec is required for this flashType");
-        return q.Unit is { Length: > 0 }
-            ? DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI(q.Unit, q.Value)
-            : q.Value;
-    }
+    // A required flash spec in the engine's SI (Pa, K, kJ/kg, kJ/kg.K, dimensionless). The unit's
+    // DIMENSION is checked by the API before the worker runs — see Engine.ToSi.
+    private static double RequireSi(FlowQuantity? q, string name) =>
+        q is null
+            ? throw new WorkerInputException("FLASH_INVALID", $"{name} spec is required for this flashType")
+            : Engine.ToSi(q);
 
     // ── pfd (T054) ──────────────────────────────────────────────────────────
     // Renders a PFD PNG from a document (POST /flowsheets/pfd) or a saved
@@ -833,12 +803,7 @@ static class Modes
         // Template-based render — load, render. SavePath is unused here.
         if (job.Template is { Length: > 0 } template)
         {
-            var auto = new Automation3();
-            object? fsObj;
-            try { fsObj = auto.LoadFlowsheet(template); }
-            catch (Exception ex) { throw new TemplateLoadException($"failed to load '{Path.GetFileName(template)}': {ex.Message}"); }
-            var fs = (fsObj as IFlowsheet) ?? throw new TemplateLoadException($"failed to load '{Path.GetFileName(template)}'");
-            return RenderPfd(fs);
+            return RenderPfd(Engine.LoadTemplate(new Automation3(), template));
         }
 
         throw new WorkerInputException("INVALID_REQUEST", "pfd mode requires a document or a template");

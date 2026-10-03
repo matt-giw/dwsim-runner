@@ -170,7 +170,7 @@ your request"; a run that completed and diverged is an answer.
 | 429 | `QUEUE_FULL` | admission cap reached; `Retry-After: 5` is set |
 | 500 | `WORKER_CRASH` | worker died unexpectedly, or returned a non-JSON body. Detail stays in server logs |
 | 503 | `AUTH_NOT_CONFIGURED` | the server has no `RUNNER_API_KEY`. Not a credential problem — the deployment is missing its secret |
-| 503 | `ENGINE_UNAVAILABLE` | the catalog worker failed or returned invalid JSON — check `/health` |
+| 503 | `ENGINE_UNAVAILABLE` | the catalog worker failed, returned invalid JSON, or returned a catalog that could not be parsed. Document-validating routes refuse rather than validate against an empty catalog — check `/health` |
 | 504 | `SOLVE_TIMEOUT` | hard timeout. Either the API killed the worker process tree, or the **worker killed itself** on its own `WORKER_DEADLINE_SECONDS` — which watchdog noticed is not the caller's problem |
 
 Worker-originated 400/422 bodies are **passed through verbatim** when the worker emitted valid JSON
@@ -327,7 +327,7 @@ of record) and then `DELETE`s the runner-side copy.
 Object inventory without solving. Cached by template mtime.
 
 ```jsonc
-{ "objects": [ { "tag": "R-101", "type": "Reactor_Conversion",
+{ "objects": [ { "tag": "R-101", "type": "reactorConversion",
                  "settableProperties": ["OutletTemperature", "Pressure"] } ] }
 ```
 
@@ -489,7 +489,7 @@ target is `400 INVALID_REQUEST` from the worker, with its own message.
                   "heatCapacityKJKgK": 4.19, "viscosityPaS": 0.00035 } ]
   } ],
   "energy":  [ { "name": "E-1", "dutyKw": 63.9 } ],
-  "unitOps": [ { "name": "H-101", "type": "Heater", "powerKw": null, "dutyKw": 63.9,
+  "unitOps": [ { "name": "H-101", "type": "heater", "powerKw": null, "dutyKw": 63.9,
                  "outletTemperatureC": 80.0, "outletPressureBar": 1.01325,
                  "solvingMethod": null, "maxIterations": null } ],  // columns only
   "warnings": [] }
@@ -581,10 +581,9 @@ Anything else is `400 FLASH_INVALID`. `TH` and `TS` are **not supported** — th
 process outright (measured under both STEAM and PR). `PSF`/`TSF` need solids handling this runner
 does not select.
 
-> ⚠️ **`TVF` is accepted and, on a pure compound, silently insensitive.** For a single compound,
-> saturation pressure does not depend on vapour fraction, so `TVF` at three different
-> `vaporFraction` values returns three identical results. Prefer `PVF`, which is responsive.
-> Recorded in the iskra monorepo as spec 147.
+> **`TVF` is refused for a single compound** (`400 FLASH_INVALID`). There the engine ignores
+> `vaporFraction` and returns the same state for every value; use `PVF`. `TVF` on a mixture is
+> unchanged.
 
 ```jsonc
 { "vaporFraction": 0.0,

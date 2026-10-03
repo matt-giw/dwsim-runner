@@ -689,6 +689,19 @@ public static class UnitOpCatalog
             [], false),
     }.ToDictionary(d => d.Type, d => d, StringComparer.Ordinal);
 
+    /// <summary>
+    /// Engine `ObjectType` → this runner's wire type: the REVERSE of <see cref="Types"/>, computed
+    /// from it and never stored beside it, so it cannot disagree with the allowlist. The first
+    /// declaration wins should two wire types ever share an engine type.
+    /// </summary>
+    private static readonly Dictionary<ObjectType, string> WireTypeByObjectType = Types.Values
+        .GroupBy(d => d.ObjectType)
+        .ToDictionary(g => g.Key, g => g.First().Type);
+
+    /// <summary>The wire type the catalog exposes for an engine type, or null when it exposes none.</summary>
+    public static string? WireTypeFor(ObjectType engineType) =>
+        WireTypeByObjectType.TryGetValue(engineType, out var wire) ? wire : null;
+
     /// <summary>Serializable catalog view (worker `catalog` mode payload).</summary>
     /// <summary>
     /// Engine enum member → wire name. `Delta_P` and `DeltaP` both become `deltaP`; `Kv_Liquid`
@@ -739,6 +752,19 @@ public static class UnitOpCatalog
         _ => throw new InvalidOperationException(
             $"'{unit}' is not a temperature-difference unit. Use K/degC (a difference is the same in " +
             "both) or F/R. A difference has no offset, so an absolute temperature unit cannot express one."),
+    };
+
+    /// <summary>
+    /// Convert a voltage to volts. DWSIM's converter has no voltage family, so `ConvertToSI("kV", x)`
+    /// would return x unchanged; the runner scales it here. An unrecognised unit THROWS.
+    /// </summary>
+    public static double ConvertVoltage(string unit, double value) => unit switch
+    {
+        "V" => value,
+        "kV" => value * 1000.0,
+        "mV" => value * 0.001,
+        _ => throw new InvalidOperationException(
+            $"'{unit}' is not a voltage unit. Use V, kV or mV."),
     };
 
     public static object ToPayload() => Types.Values

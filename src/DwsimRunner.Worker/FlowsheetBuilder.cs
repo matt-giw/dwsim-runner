@@ -114,17 +114,10 @@ public static class FlowsheetBuilder
         var resolvedCompounds = new List<string>();
         foreach (var requested in doc.Compounds ?? [])
         {
-            var match = available.Keys.FirstOrDefault(k => string.Equals(k, requested, StringComparison.OrdinalIgnoreCase));
+            var match = Engine.ResolveCompound(available.Keys, requested, out var notFound);
             if (match is null)
             {
-                var suggestions = available.Keys
-                    .Where(k => k.Contains(requested, StringComparison.OrdinalIgnoreCase)
-                             || requested.Length >= 4 && k.StartsWith(requested[..4], StringComparison.OrdinalIgnoreCase))
-                    .Take(5).ToList();
-                Error("UNKNOWN_COMPOUND", null,
-                    $"compound '{requested}' not found" +
-                    (suggestions.Count > 0 ? $"; did you mean: {string.Join(", ", suggestions)}?" : ""),
-                    "compounds");
+                Error("UNKNOWN_COMPOUND", null, notFound, "compounds");
                 continue;
             }
             fs.AddCompound(match);
@@ -132,13 +125,11 @@ public static class FlowsheetBuilder
         }
 
         // ── property package ───────────────────────────────────────────────
-        var engineNames = fs.GetAvailablePropertyPackages().Cast<string>().ToList();
+        var engineNames = Engine.PropertyPackageNames(fs);
         var packageName = PackageCatalog.Resolve(doc.PropertyPackage ?? "", engineNames);
         if (packageName is null)
             Error("UNKNOWN_PROPERTY_PACKAGE", null,
-                $"property package '{doc.PropertyPackage}' not found; available ids: " +
-                string.Join(", ", engineNames.Select(n => PackageCatalog.Classify(n).Id).Distinct().Order()),
-                "propertyPackage");
+                Engine.UnknownPackageMessage(doc.PropertyPackage, engineNames), "propertyPackage");
 
         if (issues.Any(i => i.Severity == "error"))
             throw new BuildAbortException(
@@ -286,7 +277,7 @@ public static class FlowsheetBuilder
             {
                 // kW, through the same helper the electrolyzer's synthesized stream uses — one
                 // function so a synthesized and an authored duty cannot mean different things.
-                ElectrolyzerConfigurator.SetEnergyFlow(so, ToSi(o.Spec!.Duty!, "kW"));
+                ElectrolyzerConfigurator.SetEnergyFlow(so, Engine.ToSi(o.Spec!.Duty!));
             }
             catch (Exception ex)
             {
@@ -301,10 +292,10 @@ public static class FlowsheetBuilder
             var spec = o.Spec!;
             try
             {
-                if (spec.Temperature is { } tq) ms.SetTemperature(ToSi(tq, "K"));
-                if (spec.Pressure is { } pq) ms.SetPressure(ToSi(pq, "Pa"));
-                if (spec.MassFlow is { } mf) ms.SetMassFlow(ToSi(mf, "kg/s"));
-                if (spec.MolarFlow is { } nf) ms.SetMolarFlow(ToSi(nf, "mol/s"));
+                if (spec.Temperature is { } tq) ms.SetTemperature(Engine.ToSi(tq));   // K
+                if (spec.Pressure is { } pq) ms.SetPressure(Engine.ToSi(pq));      // Pa
+                if (spec.MassFlow is { } mf) ms.SetMassFlow(Engine.ToSi(mf));      // kg/s
+                if (spec.MolarFlow is { } nf) ms.SetMolarFlow(Engine.ToSi(nf));     // mol/s
                 if (spec.Composition is { } comp)
                 {
                     var order = ((dynamic)ms).Phases[0].Compounds.Values;
@@ -675,6 +666,9 @@ public static class FlowsheetBuilder
                 JsonValueKind.Number when p.UnitType == "temperatureDelta" => unit is { Length: > 0 }
                     ? UnitOpCatalog.ConvertDelta(unit, je.GetDouble())
                     : je.GetDouble(),
+                JsonValueKind.Number when p.UnitType == "voltage" => unit is { Length: > 0 }
+                    ? UnitOpCatalog.ConvertVoltage(unit, je.GetDouble())
+                    : je.GetDouble(),
                 JsonValueKind.Number => unit is { Length: > 0 }
                     ? DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI(unit, je.GetDouble())
                     : je.GetDouble(),
@@ -920,10 +914,4 @@ public static class FlowsheetBuilder
             if (orders.ContainsKey(k)) orders[k] = v;
         return orders;
     }
-
-    // Unit → SI via the engine's own converter; bare numbers are taken as SI.
-    private static double ToSi(FlowQuantity q, string siUnit) =>
-        q.Unit is { Length: > 0 }
-            ? DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI(q.Unit, q.Value)
-            : q.Value;
 }
