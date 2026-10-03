@@ -665,6 +665,7 @@ a place in your document, and carry `tag` and `path` to point at it.
 | `INVALID_UNIT` | a unit spelling this runner does not accept — see `GET /catalog/units`. Outside document validation the same check answers as a top-level `400 INVALID_UNIT` |
 | `COMPOSITION_NOT_NORMALIZED` | `fractions` do not sum to 1 |
 | `MISSING_REACTION_SET` | a reactor type declaring `requiresReactionSet` has none |
+| `REACTION_KEQ_INVALID` | an equilibrium reaction's `equilibriumConstantSource` is an expression the engine cannot evaluate. Refused rather than run, because the engine takes an unevaluable `ln(Keq)` as **0** — a silent `Keq` of 1 that converges and reports a wrong extent. `T` is the only variable and is **case-sensitive**; `Math` functions are not (`exp`, `log`, `sqrt`, `^` and `1.8E+8` all parse) |
 | `CONFLICTING_PARAMETERS` | mutually exclusive parameters both set |
 
 `severity` is `error` or `warning`. Only an `error` makes the document invalid; warnings ride

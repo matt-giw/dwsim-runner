@@ -840,6 +840,23 @@ public static class FlowsheetBuilder
                         }
                         else
                         {
+                            // ISKS-176 round 2 — REFUSE an expression the engine cannot evaluate,
+                            // because its failure mode is silence. An unparseable `lnKeq` is worth
+                            // 0, `exp(0)` is 1, and the reactor then converges on K = 1 with an
+                            // empty warnings list: a partial conversion, a matching partial duty,
+                            // mass balance closing, and no indication the stated chemistry was
+                            // never used. Measured: 'TOTAL_GARBAGE', '' and 'lnK' are each
+                            // byte-identical to a stated constant K = 1 (KeqExpression.cs).
+                            //
+                            // Checked with DWSIM's OWN evaluator, so this cannot refuse something
+                            // the engine would have run — the alternative, a hand-written grammar,
+                            // would have to admit `T^2`, `exp(1)` and `1.843E+8` and is a second
+                            // opinion waiting to drift.
+                            if (KeqExpression.Refusal(source) is { } why)
+                            {
+                                error("REACTION_KEQ_INVALID", rx.Tag, why, "reactions");
+                                continue;
+                            }
                             cr.KExprType = DWSIM.Interfaces.Enums.KOpt.Expression;
                             cr.Expression = source;   // lnKeq as f(T)
                         }

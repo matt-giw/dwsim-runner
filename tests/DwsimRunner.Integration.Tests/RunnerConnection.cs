@@ -13,11 +13,28 @@ public static class RunnerConnection
     public static readonly string BaseUrl =
         Environment.GetEnvironmentVariable("SIM_RUNNER_URL") ?? "http://localhost:8080";
 
-    public static readonly HttpClient Client = new()
+    /// <summary>
+    /// The shared key, sent on every request. Found while adding the ISKS-176 Keq cases: the runner
+    /// fails CLOSED, so an image built from this revision answers `503 AUTH_NOT_CONFIGURED` with no
+    /// key set and `401` with one set and no header — and this client sent no header either way. The
+    /// whole Tier B suite was therefore unrunnable against its own image, which reads as "integration
+    /// tests pass" only because they `Skip` when `/health` is unreachable and FAIL fast when it is.
+    ///
+    /// `/health` stays open, so `Available` could not see it: the probe succeeded while every real
+    /// route was refused. Matching the compose default keeps `docker compose up -d` working with no
+    /// extra environment.
+    /// </summary>
+    public static readonly string ApiKey =
+        Environment.GetEnvironmentVariable("RUNNER_API_KEY") ?? "local-dev-key";
+
+    public static readonly HttpClient Client = NewClient(TimeSpan.FromSeconds(120));
+
+    private static HttpClient NewClient(TimeSpan timeout)
     {
-        BaseAddress = new Uri(BaseUrl),
-        Timeout = TimeSpan.FromSeconds(120),
-    };
+        var client = new HttpClient { BaseAddress = new Uri(BaseUrl), Timeout = timeout };
+        client.DefaultRequestHeaders.Add("X-Api-Key", ApiKey);
+        return client;
+    }
 
     private static readonly Lazy<bool> _available = new(() =>
     {
