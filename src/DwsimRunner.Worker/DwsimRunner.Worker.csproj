@@ -54,6 +54,14 @@
       <HintPath>$(DwsimPath)/SkiaSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- FLEE, the expression evaluator DWSIM itself compiles a reaction's `lnKeq = f(T)` with.
+         Referenced so `KeqExpression.Refusal` can compile a candidate expression through THE SAME
+         parser before the engine gets it: a second opinion about what is valid is exactly how a
+         guard comes to refuse something the engine would have run. See FlowsheetBuilder.cs. -->
+    <Reference Include="Ciloci.Flee">
+      <HintPath>$(DwsimPath)/Ciloci.Flee.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>
