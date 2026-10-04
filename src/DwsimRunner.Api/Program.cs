@@ -798,7 +798,9 @@ app.MapPost("/flowsheets/export", async (ExportRequest req, HttpContext http, Ca
         return Results.Json(new { error = "DOCUMENT_INVALID", issues = issuesOut }, statusCode: StatusCodes.Status400BadRequest);
     }
 
-    Directory.CreateDirectory(exportTempPath);
+    // Best effort: a directory that cannot be created means the engine writes nothing, and the
+    // check below answers SAVE_FAILED rather than an unstructured 500 (review of #30).
+    try { Directory.CreateDirectory(exportTempPath); } catch { /* reported as SAVE_FAILED below */ }
     var savePath = Path.Combine(exportTempPath, $"export-{Guid.NewGuid():N}.dwxmz");
     try
     {
@@ -812,10 +814,12 @@ app.MapPost("/flowsheets/export", async (ExportRequest req, HttpContext http, Ca
             return ErrorResult(StatusCodes.Status500InternalServerError, "SAVE_FAILED",
                 "the flowsheet solved but the engine wrote no file");
 
+        // Read first: the X-Export-* headers go only on a response that carries the file.
+        var bytes = await File.ReadAllBytesAsync(savePath, ct);
         var report = System.Text.Json.Nodes.JsonNode.Parse(outcome.Body);
         http.Response.Headers["X-Export-Converged"] = (report?["converged"]?.GetValue<bool>() ?? false) ? "true" : "false";
         http.Response.Headers["X-Export-Objects"] = (report?["build"]?["objectsCreated"]?.GetValue<int>() ?? 0).ToString();
-        return Results.Bytes(await File.ReadAllBytesAsync(savePath, ct), "application/octet-stream");
+        return Results.Bytes(bytes, "application/octet-stream");
     }
     finally
     {

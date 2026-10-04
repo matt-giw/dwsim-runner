@@ -161,8 +161,23 @@ public class ExportEndpointTests
         await host.Client.PostAsJsonAsync("/flowsheets/export", Body(Doc()));
         Assert.Equal(first + 2, Directory.GetFiles(host.TemplatesDir, "run-*.start").Length);   // two real runs
 
-        var templates = await host.Client.GetFromJsonAsync<JsonElement>("/templates");
-        Assert.DoesNotContain("dwxmz", templates.ToString());
+        // Nothing landed in the template store (the listing shows ids without an extension, so a
+        // string search for "dwxmz" could not fail — review of #30).
+        Assert.True(!Directory.Exists(host.UserTemplatesDir) || Directory.GetFiles(host.UserTemplatesDir).Length == 0,
+            "an export wrote into the user template store");
+    }
+
+    [Fact]
+    public async Task An_export_temp_path_that_cannot_be_created_is_a_structured_SAVE_FAILED()
+    {
+        var blocker = Path.Combine(Directory.CreateTempSubdirectory("dwsim-export-blocked-").FullName, "a-file");
+        File.WriteAllText(blocker, "not a directory");
+        using var host = new RunnerHost(new() { ["EXPORT_TEMP_PATH"] = Path.Combine(blocker, "sub") });
+
+        var resp = await host.Client.PostAsJsonAsync("/flowsheets/export", Body(Doc()));
+
+        Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+        Assert.Equal("SAVE_FAILED", (await resp.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString());
     }
 
     private static async Task<int> NewWorkerPid(RunnerHost host, string[] before)

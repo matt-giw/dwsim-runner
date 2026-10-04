@@ -79,6 +79,17 @@ if (job.Document is { ValueKind: JsonValueKind.Object } doc
         if (o.TryGetProperty("tag", out var tag) && tag.GetString() is { } tg)
             docTags.Add(tg);
 
+// iskra 286 — the save file is written BEFORE any sleep, so a timeout or a caller hanging up meets a
+// file on disk and the API's cleanup is actually exercised (it was written after, so the "no file
+// left" assertions could not fail). "__save-fail" is the engine's swallowed SaveFlowsheet2 exception:
+// no file at all.
+if (job.Mode?.ToLowerInvariant() == "build-solve" && job.SavePath is { Length: > 0 } savePath
+    && !docTags.Contains("__save-fail"))
+{
+    // Like the real worker (Modes.BuildSolve): a save that cannot be written is swallowed.
+    try { File.WriteAllText(savePath, "fake dwxmz written by FakeWorker"); } catch (IOException) { }
+}
+
 foreach (var tg in docTags)
     if (tg.StartsWith("__sleep:") && int.TryParse(tg["__sleep:".Length..], out var ds))
         Thread.Sleep(TimeSpan.FromSeconds(ds));
@@ -167,10 +178,7 @@ switch (job.Mode?.ToLowerInvariant())
             """.ReplaceLineEndings(""));
             return Done(4);
         }
-        // iskra 286 — "__save-fail" is the engine's swallowed SaveFlowsheet2 exception: the solve
-        // succeeds and no file appears.
-        if (job.SavePath is { Length: > 0 } sp && !docTags.Contains("__save-fail"))
-            File.WriteAllText(sp, "fake dwxmz written by FakeWorker");
+        // (the save file, if any, was written above — before any sleep)
         var converged = docTags.Contains("__not-converged") ? "false" : "true";
         Console.WriteLine($$$"""
         {"converged":{{{converged}}},"elapsedMs":7,

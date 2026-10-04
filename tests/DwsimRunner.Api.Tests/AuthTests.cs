@@ -33,6 +33,7 @@ public class AuthTests
     [InlineData("POST", "/solve")]
     [InlineData("POST", "/compare")]
     [InlineData("POST", "/flowsheets/build-solve")]
+    [InlineData("POST", "/flowsheets/export")]
     [InlineData("DELETE", "/templates/t")]
     public async Task Protected_routes_reject_missing_key_with_401(string method, string path)
     {
@@ -92,6 +93,7 @@ public class AuthTests
                  {
                      ("POST", "/solve"),
                      ("POST", "/flowsheets/build-solve"),
+                     ("POST", "/flowsheets/export"),
                      ("POST", "/optimize"),
                      ("DELETE", "/templates/t"),
                      ("GET", "/templates/t/file"),
