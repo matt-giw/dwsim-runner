@@ -253,7 +253,9 @@ switch (job.Mode?.ToLowerInvariant())
          "layout":{},"stored":{"solved":false,"streams":{},"energy":{}},
          "placeholders":[],"ignored":[],
          "propertyPackages":[{"name":"Steam Tables (IAPWS-IF97)","id":"STEAM","supported":true}],"warnings":[],
-         "fake":{"extension":"{{{Path.GetExtension(path)}}}","bytes":{{{new FileInfo(path).Length}}}}}
+         "fake":{"extension":"{{{Path.GetExtension(path)}}}","bytes":{{{new FileInfo(path).Length}}},
+                 "env":{{{JsonSerializer.Serialize(Environment.GetEnvironmentVariables().Keys.Cast<string>().Order().ToArray())}}},
+                 "tmp":{{{JsonSerializer.Serialize(Path.GetTempPath())}}}}}
         """.ReplaceLineEndings(""));
         break;
     }

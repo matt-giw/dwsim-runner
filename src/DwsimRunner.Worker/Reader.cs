@@ -34,16 +34,32 @@ internal static partial class Reader
     public static JsonObject Read(Job job)
     {
         var path = job.Template ?? throw new WorkerInputException("INVALID_REQUEST", "template (the file path) is required for read mode");
+
+        // #31 review 1 — the API hands this file as already-inflated XML; the engine NEVER sees the
+        // original bytes. Sanitise to the allow-list BEFORE the loader runs, and load only the result.
+        List<Sanitizer.RemovedItem> removedItems;
+        string cleanPath;
+        try
+        {
+            var (clean, removed) = Sanitizer.Sanitize(File.ReadAllText(path));
+            removedItems = removed;
+            cleanPath = Path.Combine(Path.GetTempPath(), $"read-clean-{Guid.NewGuid():N}.dwxml");
+            File.WriteAllText(cleanPath, clean);
+        }
+        catch (System.Xml.XmlException ex) { throw new TemplateLoadException($"the file is not well-formed DWSIM XML: {ex.Message}", "LOAD_FAILED"); }
+
         var auto = new DWSIM.Automation.Automation3();
         object? loaded;
-        try { loaded = auto.LoadFlowsheet(path); }
+        try { loaded = auto.LoadFlowsheet(cleanPath); }
         catch (Exception ex) { throw new TemplateLoadException(Chain(ex), "LOAD_FAILED"); }
         var fs = loaded as IFlowsheet
                  ?? throw new TemplateLoadException("the engine's loader returned no flowsheet", "LOAD_FAILED");
 
         var result = Describe(fs, Engine.PropertyPackageNames(auto).Names);
-        result["savedBy"] = SavedBy(path);
+        result["savedBy"] = SavedBy(cleanPath);
         result["engineVersion"] = Modes.ExtractVersion(auto);
+        result["removed"] = new JsonArray(removedItems
+            .Select(r => (JsonNode)new JsonObject { ["kind"] = r.Kind, ["detail"] = r.Detail }).ToArray());
         return result;
     }
 

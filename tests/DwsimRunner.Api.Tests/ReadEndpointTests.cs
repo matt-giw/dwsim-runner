@@ -69,22 +69,51 @@ public class ReadEndpointTests
 
     // ── what the worker is handed ─────────────────────────────────────────
 
+    // #31 review 2 — the engine never unzips. A zip is inflated by the API and the worker is handed
+    // the .xml inside it, as a .dwxml; the original zip bytes never reach DWSIM's loader.
     [Fact]
-    public async Task A_zip_reaches_the_worker_as_a_dwxmz_and_the_upload_is_deleted()
+    public async Task A_zip_reaches_the_worker_as_inflated_dwxml_and_the_upload_is_deleted()
     {
         var dir = ReadDir();
         using var host = Host(dir);
-        var bytes = Zip(("tmp1.xml", Utf8(Xml)));
+        var inner = Utf8(Xml);
+        var bytes = Zip(("tmp1.xml", inner));
 
         var resp = await Post(host, bytes);
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var body = await Body(resp);
         var fake = body.GetProperty("fake");
-        Assert.Equal(".dwxmz", fake.GetProperty("extension").GetString());
-        Assert.Equal(bytes.Length, fake.GetProperty("bytes").GetInt32());
+        Assert.Equal(".dwxml", fake.GetProperty("extension").GetString());
+        Assert.Equal(inner.Length, fake.GetProperty("bytes").GetInt32());   // the inflated xml, not the zip
         Assert.True(body.TryGetProperty("document", out _));
         Assert.Empty(Uploads(dir));
+        Assert.Empty(Directory.GetDirectories(dir));   // the per-job temp dir is gone
+    }
+
+    // The review's bomb lied small in the central directory, then the ENGINE's unzipper (SharpZipLib)
+    // ignored the lie and extracted the real 314 MB. The engine no longer unzips: the API inflates
+    // with System.IO.Compression, which bounds its read by the declared size — so a zip that lies
+    // SMALL truncates to that size and cannot bomb. No 500, and the per-job temp dir is cleaned.
+    [Fact]
+    public async Task A_zip_that_lies_small_about_its_unpacked_size_cannot_bomb()
+    {
+        var dir = ReadDir();
+        using var host = Host(dir);
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            using var s = zip.CreateEntry("tmp1.xml", CompressionLevel.Optimal).Open();
+            var chunk = new byte[1 << 20];
+            for (var i = 0; i < 201; i++) s.Write(chunk);   // 201 MB of zeros → ~200 KB
+        }
+        var bytes = ms.ToArray();
+        LieAboutUnpackedSize(bytes);   // headers now claim the entry inflates to 1 byte
+
+        var resp = await Post(host, bytes);
+
+        Assert.NotEqual(HttpStatusCode.InternalServerError, resp.StatusCode);   // did not bomb or crash
+        Assert.Empty(Directory.GetDirectories(dir));                            // no temp left behind
     }
 
     [Theory]
@@ -166,11 +195,11 @@ public class ReadEndpointTests
     }
 
     [Fact]
-    public async Task Declared_unpacked_size_over_200_MB_is_413_before_extraction()
+    public async Task Inflating_over_200_MB_is_413_and_spawns_nothing()
     {
         var dir = ReadDir();
         using var host = Host(dir);
-        // 201 MB of zeros deflates to ~200 KB — a real bomb, not a patched header.
+        // 201 MB of zeros deflates to ~200 KB — a real bomb, honest headers.
         using var ms = new MemoryStream();
         using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
         {
@@ -302,6 +331,51 @@ public class ReadEndpointTests
         var sent = actual.EnumerateObject().Select(p => p.Name).Where(n => n != "fake").ToHashSet();
 
         Assert.True(!sent.Except(declared).Any(), "undeclared: " + string.Join(", ", sent.Except(declared)));
+    }
+
+    // #31 review 1c — a compromised worker must not be handed the API's secrets. The worker is spawned
+    // with an allow-listed environment only, and a per-job TMPDIR under the read directory.
+    [Fact]
+    public async Task The_worker_gets_an_allow_listed_environment_and_a_per_job_temp_dir()
+    {
+        // An ALLOW-list, proved against REAL env vars with arbitrary names: none reaches the child,
+        // whatever it is called. (RUNNER_API_KEY is entangled with the host's own auth, so it is not
+        // set here; the allow-list excludes it by construction — its name is simply not on the list.)
+        Environment.SetEnvironmentVariable("ISK_PROBE_SECRET", "super-secret-key");
+        Environment.SetEnvironmentVariable("DATABASE_URL", "postgres://secret");
+        try
+        {
+            var dir = ReadDir();
+            using var host = Host(dir);
+
+            var fake = (await Body(await Post(host, Utf8(Xml)))).GetProperty("fake");
+            var env = fake.GetProperty("env").EnumerateArray().Select(e => e.GetString()).ToHashSet();
+
+            Assert.DoesNotContain("ISK_PROBE_SECRET", env);
+            Assert.DoesNotContain("DATABASE_URL", env);
+            Assert.DoesNotContain("RUNNER_API_KEY", env);
+            Assert.Contains("DWSIM_PATH", env);
+            // The worker's TMPDIR is a per-job directory under the read dir, not the shared /tmp/dwsim.
+            var tmp = fake.GetProperty("tmp").GetString()!;
+            Assert.StartsWith(Path.GetFullPath(dir), Path.GetFullPath(tmp));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ISK_PROBE_SECRET", null);
+            Environment.SetEnvironmentVariable("DATABASE_URL", null);
+        }
+    }
+
+    /// <summary>Zero the uncompressed-size field in every local (+22) and central (+24) header, so the
+    /// headers claim the entry inflates to nothing — the lie the review's bomb used.</summary>
+    private static void LieAboutUnpackedSize(byte[] zip)
+    {
+        for (var i = 0; i + 4 <= zip.Length; i++)
+        {
+            if (zip[i] != 0x50 || zip[i + 1] != 0x4B) continue;
+            if (zip[i + 2] == 0x03 && zip[i + 3] == 0x04) BitConverter.GetBytes(1).CopyTo(zip, i + 22);
+            else if (zip[i + 2] == 0x01 && zip[i + 3] == 0x02) BitConverter.GetBytes(1).CopyTo(zip, i + 24);
+        }
     }
 
     /// <summary>Set general-purpose bit 0 (encrypted) on every local and central header.</summary>

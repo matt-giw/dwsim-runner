@@ -626,7 +626,13 @@ public sealed record ReadResponse(
     string? SavedBy, string EngineVersion, JsonElement Document,
     Dictionary<string, LayoutBox> Layout, StoredResults Stored,
     List<PlaceholderResponse> Placeholders, List<IgnoredResponse> Ignored,
-    List<PropertyPackageRead> PropertyPackages, List<string> Warnings);
+    List<PropertyPackageRead> PropertyPackages, List<string> Warnings,
+    List<RemovedResponse> Removed);
+
+/// <summary>Something the sanitiser stripped before the engine loaded the file (#31 review 1).</summary>
+/// <param name="Kind">section | script | dynamicProperties | unsupportedType.</param>
+/// <param name="Detail">What it was — a section name, a script's title and event, or an object tag and type.</param>
+public sealed record RemovedResponse(string Kind, string Detail);
 
 /// <summary>A graphic object's box.</summary>
 /// <param name="X">Left, flowsheet units.</param>

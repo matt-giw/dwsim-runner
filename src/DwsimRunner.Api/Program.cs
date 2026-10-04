@@ -1069,19 +1069,28 @@ app.MapPost("/flowsheets/read", async (HttpRequest request, int? timeoutSeconds,
         return TooLarge();   // a chunked body past Kestrel's own limit
     }
 
-    var (extension, refusal) = SniffDwsimFile(bytes);
+    // #31 review 2 — the engine NEVER unzips: the API inflates the one .xml entry here, under a
+    // counting stream with a hard stop, so a lying central directory cannot drive the extraction.
+    var (xml, refusal) = InflateDwsimXml(bytes);
     if (refusal is not null) return refusal;
 
     Directory.CreateDirectory(readTempPath);
-    var file = Path.Combine(readTempPath, $"dwsim-read-{Guid.NewGuid():N}{extension}");
+    // The upload is the INFLATED xml; the worker sanitises and loads it as .dwxml, so the engine
+    // never sees a zip. A per-job directory is the worker's TMPDIR (engine scratch); both go on
+    // every path — success, refusal, crash, timeout, cancel (the finally runs in all of them).
+    var file = Path.Combine(readTempPath, $"dwsim-read-{Guid.NewGuid():N}.dwxml");
+    var jobTmp = Path.Combine(readTempPath, $"job-{Guid.NewGuid():N}");
     try
     {
-        await File.WriteAllBytesAsync(file, bytes, ct);
-        app.Logger.LogInformation("read: fileName={FileName} bytes={Bytes} format={Format}",
-            request.Headers["X-File-Name"].ToString(), bytes.Length, extension);
+        var dir = Directory.CreateDirectory(jobTmp);
+        try { dir.UnixFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute; }
+        catch (PlatformNotSupportedException) { /* non-POSIX host (tests on macOS/Windows) */ }
+        await File.WriteAllBytesAsync(file, xml!, ct);
+        app.Logger.LogInformation("read: fileName={FileName} bytes={Bytes} xmlBytes={XmlBytes}",
+            request.Headers["X-File-Name"].ToString(), bytes.Length, xml!.Length);
         var timeout = TimeSpan.FromSeconds(timeoutSeconds is { } to ? Math.Clamp(to, 1, MaxTimeoutSeconds) : 120);
         var outcome = await RunDocumentModeAsync(JsonSerializer.SerializeToElement(file), "read", timeout, null, ct,
-            payloadKey: "template");
+            payloadKey: "template", tmpDir: jobTmp);
         if (outcome.Status == StatusCodes.Status429TooManyRequests)
             request.HttpContext.Response.Headers.RetryAfter = "5";
         return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
@@ -1089,6 +1098,7 @@ app.MapPost("/flowsheets/read", async (HttpRequest request, int? timeoutSeconds,
     finally
     {
         try { File.Delete(file); } catch { /* best effort; the directory is the runner's own */ }
+        try { Directory.Delete(jobTmp, recursive: true); } catch { /* best effort */ }
     }
 })
     .WithTags("Documents")
@@ -1103,33 +1113,34 @@ app.MapPost("/flowsheets/read", async (HttpRequest request, int? timeoutSeconds,
     .Produces<ErrorResponse>(StatusCodes.Status500InternalServerError)
     .Produces<ErrorResponse>(StatusCodes.Status504GatewayTimeout);
 
-// The read route's format decision: zip magic → .dwxmz (after the central-directory checks), an XML
-// prolog or DWSIM root element after an optional UTF-8 BOM → .dwxml, anything else refused. The
-// extension chosen here is what makes DWSIM's loader take the right path: Automation3.LoadFlowsheet
-// unzips any file whose extension ends in "z" and parses everything else as XML.
-static (string? Extension, IResult? Refusal) SniffDwsimFile(byte[] bytes)
+// The read route's format decision and the engine-free inflation. Zip magic → find the one .xml
+// entry and INFLATE it here, under a counting stream with a hard stop (#31 review 2: the declared
+// central-directory size is attacker-controlled, so the real inflated bytes are what is bounded).
+// An XML prolog or DWSIM root after an optional BOM → the bytes as they are. Anything else is refused.
+// The engine never unzips: it is handed the inflated XML only.
+const int ReadMaxZipEntries = 64;
+(byte[]? Xml, IResult? Refusal) InflateDwsimXml(byte[] bytes)
 {
-    static IResult NotDwsim(string why) => ErrorResult(StatusCodes.Status415UnsupportedMediaType, "NOT_A_DWSIM_FILE", why);
+    IResult NotDwsim(string why) => ErrorResult(StatusCodes.Status415UnsupportedMediaType, "NOT_A_DWSIM_FILE", why);
+    IResult Unpacked() => ErrorResult(StatusCodes.Status413PayloadTooLarge, "UNPACKED_TOO_LARGE",
+        $"the file inflates past the {ReadMaxUnpackedBytes / (1024 * 1024)} MB limit");
 
     if (bytes is [0x50, 0x4B, 0x03, 0x04, ..])
     {
         try
         {
             using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(bytes), System.IO.Compression.ZipArchiveMode.Read);
-            long unpacked = 0;
-            var hasXml = false;
-            foreach (var entry in zip.Entries)
-            {
-                if (entry.IsEncrypted)
+            if (zip.Entries.Count > ReadMaxZipEntries)
+                return (null, NotDwsim($"the zip has {zip.Entries.Count} entries; a DWSIM file has a handful"));
+            foreach (var e in zip.Entries)
+                if (e.IsEncrypted)
                     return (null, ErrorResult(StatusCodes.Status422UnprocessableEntity, "PASSWORD_PROTECTED",
-                        $"zip entry '{entry.FullName}' is encrypted; save the file without a password"));
-                unpacked += entry.Length;   // the DECLARED size, from the central directory
-                hasXml |= entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase);
-            }
-            if (unpacked > ReadMaxUnpackedBytes)
-                return (null, ErrorResult(StatusCodes.Status413PayloadTooLarge, "UNPACKED_TOO_LARGE",
-                    $"the zip declares {unpacked} bytes uncompressed; the limit is {ReadMaxUnpackedBytes}"));
-            return hasXml ? (".dwxmz", null) : (null, NotDwsim("the zip holds no .xml entry, so it is not a DWSIM file"));
+                        $"zip entry '{e.FullName}' is encrypted; save the file without a password"));
+            var xmlEntry = zip.Entries.FirstOrDefault(e => e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase));
+            if (xmlEntry is null) return (null, NotDwsim("the zip holds no .xml entry, so it is not a DWSIM file"));
+            using var entryStream = xmlEntry.Open();
+            var (inflated, overflow) = ReadCapped(entryStream, ReadMaxUnpackedBytes);
+            return overflow ? (null, Unpacked()) : (inflated, null);
         }
         catch (InvalidDataException ex)
         {
@@ -1140,14 +1151,29 @@ static (string? Extension, IResult? Refusal) SniffDwsimFile(byte[] bytes)
     var start = bytes is [0xEF, 0xBB, 0xBF, ..] ? 3 : 0;
     var head = System.Text.Encoding.UTF8.GetString(bytes, start, Math.Min(512, bytes.Length - start)).TrimStart();
     return head.StartsWith("<?xml", StringComparison.Ordinal) || head.StartsWith("<DWSIM_Simulation_Data", StringComparison.Ordinal)
-        ? (".dwxml", null)
+        ? (bytes, null)
         : (null, NotDwsim("the file is neither a zip (.dwxmz) nor XML (.dwxml)"));
+}
+
+// Read a stream to at most `cap` bytes; stop the instant it would exceed, so a deflate bomb inflates
+// no further than the cap plus one chunk. The flag says it overflowed.
+static (byte[] Bytes, bool Overflow) ReadCapped(Stream s, long cap)
+{
+    using var buffer = new MemoryStream();
+    var chunk = new byte[81920];
+    int n;
+    while ((n = s.Read(chunk, 0, chunk.Length)) > 0)
+    {
+        if (buffer.Length + n > cap) return ([], true);
+        buffer.Write(chunk, 0, n);
+    }
+    return (buffer.ToArray(), false);
 }
 
 // One DOCUMENT-mode job: writes {mode, document|flash, savePath?, overrides?} and runs it through
 // the same admission control, SpawnWorkerAsync and ClassifyWorkerRun as a template case.
 // Worker payload shapes mirror the FakeWorker's expectations.
-async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, TimeSpan timeout, string? savePath, CancellationToken ct, string payloadKey = "document", List<PropertyOverride>? overrides = null)
+async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, TimeSpan timeout, string? savePath, CancellationToken ct, string payloadKey = "document", List<PropertyOverride>? overrides = null, string? tmpDir = null)
 {
     var solveId = Guid.NewGuid().ToString("N")[..8];
     var clock = Stopwatch.StartNew();
@@ -1169,7 +1195,7 @@ async Task<CaseOutcome> RunDocumentModeAsync(JsonElement document, string mode, 
         if (savePath is not null) job["savePath"] = savePath;
         if (overrides is { Count: > 0 }) job["overrides"] = overrides;   // 120 US5 document cases
 
-        var run = await SpawnWorkerAsync(job, timeout, ct, gated: true);
+        var run = await SpawnWorkerAsync(job, timeout, ct, gated: true, tmpDir: tmpDir);
         var (outcome, label) = ClassifyWorkerRun(run, timeout, $"docmode {solveId}", $"mode {mode}");
         LogOutcome(label);
         return outcome;
@@ -1566,7 +1592,7 @@ static bool IsConverged(string body)
 // reports as WORKER_CRASH rather than letting the exception escape as an unstructured 500.
 const int WorkerStartFailed = 127;
 
-async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, CancellationToken ct, bool gated)
+async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, CancellationToken ct, bool gated, string? tmpDir = null)
 {
     // Job handed to the worker via a temp file (keeps argv clean, avoids stdin plumbing).
     var jobFile = Path.Combine(Path.GetTempPath(), $"dwsim-job-{Guid.NewGuid():N}.json");
@@ -1581,7 +1607,7 @@ async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, Canc
             Process proc;
             try
             {
-                proc = Process.Start(WorkerStartInfo(jobFile))
+                proc = Process.Start(WorkerStartInfo(jobFile, tmpDir))
                        ?? throw new InvalidOperationException("Process.Start returned no process");
             }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
@@ -1645,17 +1671,32 @@ static async Task KillAndReapAsync(Process proc)
     catch (OperationCanceledException) { /* see above */ }
 }
 
-// The ONE ProcessStartInfo for the worker.
-ProcessStartInfo WorkerStartInfo(string jobFile)
+// The ONE ProcessStartInfo for the worker. #31 review 1c — the worker handles untrusted files, so
+// it is NOT handed the API's environment. ProcessStartInfo copies the parent's env by default; we
+// strip it to an allow-list of what the worker actually reads, so RUNNER_API_KEY, DATABASE_URL and
+// anything else the API holds never reach a process that may be running a hostile file's code. A
+// per-job `tmpDir` becomes the worker's TMPDIR, isolating any engine scratch the API then deletes.
+ProcessStartInfo WorkerStartInfo(string jobFile, string? tmpDir = null)
 {
     var psi = new ProcessStartInfo("dotnet", $"\"{workerDll}\" \"{jobFile}\"")
     {
         RedirectStandardOutput = true,
         RedirectStandardError = true,
     };
+    foreach (var key in psi.Environment.Keys.ToList())
+        if (!WorkerEnvAllowed(key)) psi.Environment.Remove(key);
     psi.Environment["DWSIM_PATH"] = dwsimPath;
+    if (tmpDir is not null) psi.Environment["TMPDIR"] = tmpDir;
     return psi;
 }
+
+// Exactly what the worker reads (DwsimResolver, FlowsheetBuilder limits, Watchdog) plus the runtime's
+// own essentials. An allow-list, so a new secret in the API's environment is excluded by default.
+static bool WorkerEnvAllowed(string key) =>
+    key is "PATH" or "HOME" or "LANG" or "LC_ALL" or "TZ" or "LD_LIBRARY_PATH" or "DWSIM_PATH" or "TMPDIR"
+        or "MAX_DOCUMENT_OBJECTS" or "MAX_DOCUMENT_CONNECTIONS" or "MAX_DOCUMENT_REACTIONS" or "MAX_DOCUMENT_BYTES"
+        or "WORKER_DEADLINE_SECONDS"
+    || key.StartsWith("DOTNET_", StringComparison.Ordinal) || key.StartsWith("COMPlus_", StringComparison.Ordinal);
 
 // ISK-442 — THE exit-code → HTTP mapping (worker Program.cs taxonomy), the union of what the two
 // request paths each got right: exit 3 and exit 4 are mapped on every route, the version warning
