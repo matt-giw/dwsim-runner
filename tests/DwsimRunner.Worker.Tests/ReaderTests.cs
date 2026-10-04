@@ -231,6 +231,20 @@ public class ReaderTests
         Assert.Contains("System.IO.FileNotFoundException: Could not load file or assembly 'Real.Cause'.", lines[2]);
     }
 
+    // #31 review finding 4 — the message names the cause, not the server's file layout.
+    [Fact]
+    public void The_chain_redacts_absolute_paths_and_keeps_the_cause()
+    {
+        var ex = new InvalidOperationException("Error Loading Property Package Information",
+            new UnauthorizedAccessException("Access to the path '/opt/dwsim/DWSIM Application Data' is denied."));
+
+        var text = Reader.Chain(ex);
+
+        Assert.DoesNotContain("/opt/dwsim", text);
+        Assert.Contains("Access to the path '<path>' is denied.", text);
+        Assert.Contains("Error Loading Property Package Information", text);
+    }
+
     [Fact]
     public void The_chain_is_capped()
     {

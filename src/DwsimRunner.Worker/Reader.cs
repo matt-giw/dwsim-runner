@@ -27,7 +27,7 @@ using SepOps = DWSIM.UnitOperations.UnitOperations.Auxiliary.SepOps;
 
 namespace DwsimRunner.Worker;
 
-internal static class Reader
+internal static partial class Reader
 {
     private const int MaxChainChars = 2048;
 
@@ -65,9 +65,17 @@ internal static class Reader
             }
             lines.Add($"{e.GetType().FullName}: {e.Message}");
         }
-        var text = string.Join("\n", lines.Select((l, i) => new string(' ', 2 * Math.Min(i, 8)) + l.Trim()));
+        var text = string.Join("\n", lines.Select((l, i) => new string(' ', 2 * Math.Min(i, 8)) + RedactPaths(l.Trim())));
         return text.Length <= MaxChainChars ? text : text[..(MaxChainChars - 1)] + "…";
     }
+
+    /// <summary>#31 review — an absolute path (quoted, or a bare /-rooted run) reads as &lt;path&gt;; the
+    /// cause stays. The caller learns WHY a load failed, not where the runner keeps its files.</summary>
+    internal static string RedactPaths(string s) =>
+        AbsolutePath().Replace(s, m => m.Groups["q"].Success ? $"{m.Groups["q"].Value}<path>{m.Groups["q"].Value}" : "<path>");
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"(?<q>['""])/[^'""]*\k<q>|(?<![\w.])/(?:[\w.\-]+/)+[\w.\-]*")]
+    private static partial System.Text.RegularExpressions.Regex AbsolutePath();
 
     /// <summary>"DWSIM &lt;BuildVersion&gt;" from the file's own GeneralInfo, or null.</summary>
     internal static string? SavedBy(string path)
