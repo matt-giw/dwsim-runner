@@ -51,7 +51,10 @@ static class Modes
             .ToList();
 
         return new CatalogResult(engineVersion, compounds, packages, UnitOpCatalog.ToPayload(),
-            EngineInventory(auto));
+            EngineInventory(auto),
+            // 281 — the allowlist this runner ENFORCES, served from the dictionary that enforces it.
+            new SolidsOut(CompoundDefinitions.SolidsAllowlist.Keys.Order().ToList(),
+                CompoundDefinitions.SolidValues.Select(v => new SolidValueOut(v.Key, v.Unit)).ToList()));
     }
 
     /// <summary>
@@ -248,7 +251,11 @@ static class Modes
         var sw = Stopwatch.StartNew();
         var auto = new Automation3();
 
-        var (fs, build, warnings) = FlowsheetBuilder.Build(auto, FlowsheetBuilder.ParseDocument(doc));
+        var flow = FlowsheetBuilder.ParseDocument(doc);
+        var (fs, build, warnings) = FlowsheetBuilder.Build(auto, flow);
+        // Build has already refused anything wrong with the definitions; this only re-reads the names.
+        var solids = CompoundDefinitions.SolidNames(
+            CompoundDefinitions.Parse(flow.CompoundDefinitions, flow.Compounds ?? [], []));
 
         // 120 US5 — document-scoped /compare and /optimize cases: the same per-case
         // overrides the template path applies, via the same shared helper (drift is how a
@@ -292,6 +299,19 @@ static class Modes
         var (streams, energy, unitOps) = Harvest(fs);
 
         engineWarnings.AddRange(warnings.Select(w => $"[{w.Code}] {w.Message}"));
+
+        // 281 — the allowlist is the promise; this is the check. A defined solid that still came back
+        // in a fluid phase is REFUSED: the caller never receives a payload carrying the mislabel.
+        var solidIssues = streams.SelectMany(s => SolidsCheck.SolidInFluid(s.Name, PhasesOf(s), solids)).ToList();
+        if (solidIssues.Count > 0)
+            throw new BuildAbortException("SOLID_REPORTED_AS_FLUID",
+                "the engine reported a defined solid in a fluid phase", solidIssues);
+        engineWarnings.AddRange(MeltingPointWarnings(fs, streams, solids));
+        if (solids.Count > 0)
+        {
+            (streams, energy, unitOps) = WithoutEnergy(streams, energy, unitOps);
+            engineWarnings.Add(SolidsCheck.EnergyWarning);
+        }
 
         // ── optional save (T037) ─────────────────────────────────────────────
         // Conflict/overwrite policy and listing metadata (sidecar, template
@@ -350,6 +370,29 @@ static class Modes
             }
         }
         return (streams, energy, unitOps);
+    }
+
+    /// <summary>281 (T009) — every energy-bearing number off a solve that defines a solid. See SolidsCheck.EnergyWarning.</summary>
+    internal static (List<StreamRow>, List<EnergyRow>, List<UnitOpRow>) WithoutEnergy(
+        List<StreamRow> streams, List<EnergyRow> energy, List<UnitOpRow> unitOps) =>
+        (streams.Select(s => s with
+            {
+                Properties = SolidsCheck.WithoutEnergy(s.Properties),
+                Phases = s.Phases?.Select(p => p with { Properties = SolidsCheck.WithoutEnergy(p.Properties) }).ToList(),
+            }).ToList(),
+         energy.Select(e => e with { DutyKw = null }).ToList(),
+         unitOps.Select(u => u with { PowerKw = null, DutyKw = null }).ToList());
+
+    private static IEnumerable<(string Phase, IReadOnlyDictionary<string, double>? Composition)> PhasesOf(StreamRow s) =>
+        (s.Phases ?? []).Select(p => (p.Name, (IReadOnlyDictionary<string, double>?)p.Composition));
+
+    /// <summary>281 — shared by BOTH solve paths (template and document), so a warning cannot depend
+    /// on which entry point ran (Hazard 7).</summary>
+    internal static List<string> MeltingPointWarnings(IFlowsheet fs, List<StreamRow> streams, IReadOnlySet<string> solids)
+    {
+        var meltingPointK = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, c) in fs.SelectedCompounds) meltingPointK[name] = c.TemperatureOfFusion;
+        return streams.SelectMany(s => SolidsCheck.BelowMeltingPoint(s.Name, s.TemperatureC, PhasesOf(s), meltingPointK, solids)).ToList();
     }
 
     internal static StreamRow HarvestStream(DWSIM.Thermodynamics.Streams.MaterialStream ms)
@@ -521,12 +564,27 @@ static class Modes
 
         var auto = new Automation3();
 
+        // 281 — definitions first: the name resolution below, and any flowsheet created from here
+        // on, must see them. Flash has no issue list, so the first problem refuses the request.
+        var definitionIssues = new List<BuildIssue>();
+        var definitions = CompoundDefinitions.Parse(flash.CompoundDefinitions, flash.Compounds, definitionIssues);
+        CompoundDefinitions.Register(auto, definitions, definitionIssues);
+        if (definitionIssues.FirstOrDefault() is { } bad)
+            throw new WorkerInputException(bad.Code, bad.Message);
+        var solids = CompoundDefinitions.SolidNames(definitions);
+
         // Headless engines often report an empty/null-named
         // AvailablePropertyPackages — fall back to the flowsheet-level listing
         // (same workaround as catalog mode).
         var (engineNames, flowsheetForNames) = Engine.PropertyPackageNames(auto);
         var ppName = PackageCatalog.Resolve(pp, engineNames)
             ?? throw new WorkerInputException("FLASH_INVALID", Engine.UnknownPackageMessage(pp, engineNames));
+        if (CompoundDefinitions.SolidsRefusal(solids, ppName) is { } solidsRefusal)
+            throw new WorkerInputException("SOLIDS_UNSUPPORTED_PACKAGE", solidsRefusal);
+        // A PH or PS flash SOLVES FOR the quantity the placeholders corrupt. Refused, not answered.
+        if (solids.Count > 0 && flash.FlashType.ToUpperInvariant() is "PH" or "PS")
+            throw new WorkerInputException("FLASH_INVALID",
+                $"flashType '{flash.FlashType}' is not available with a defined solid: " + SolidsCheck.EnergyWarning);
 
         // Resolve the engine compound names (case-insensitive) and build the
         // composition vector in the engine's compound order. Unknown compound
@@ -549,7 +607,11 @@ static class Modes
             ?? throw new WorkerInputException("WORKER_CRASH", "engine failed to create a flowsheet");
         foreach (var c in resolvedCompounds) fs.AddCompound(c);
         fs.CreateAndAddPropertyPackage(ppName);
+        CompoundDefinitions.ApplySolidsSetting(fs, solids, ppName);
         var package = fs.PropertyPackages.Values.First();
+        var meltingPointK = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, c) in fs.SelectedCompounds) meltingPointK[name] = c.TemperatureOfFusion;
+        var solidsContext = new SolidsContext(solids, meltingPointK);
 
         // CalculateEquilibrium2 pulls the feed composition from the package's
         // CurrentMaterialStream (RET_VMOL) — a bare package NREs. Feed it a
@@ -587,16 +649,20 @@ static class Modes
                     Entropy = st.Entropy ?? flash.Entropy,
                     VaporFraction = st.VaporFraction ?? flash.VaporFraction,
                 };
-                try { results.Add(FlashOne(merged, package, feed, resolvedCompounds)); }
+                try { results.Add(FlashOne(merged, package, feed, resolvedCompounds, solidsContext)); }
                 catch (WorkerInputException ex) { results.Add(new ErrorDoc(ex.Code, ex.Message, ex.Detail)); }
             }
             return new FlashBatchResult(results);
         }
-        return FlashOne(flash, package, feed, resolvedCompounds);
+        return FlashOne(flash, package, feed, resolvedCompounds, solidsContext);
     }
 
+    /// <summary>281 — what FlashOne needs to judge a result: the defined solids and every compound's melting point.</summary>
+    private sealed record SolidsContext(IReadOnlySet<string> Solids, IReadOnlyDictionary<string, double> MeltingPointK);
+
     /// <summary>One state against an already-built package and feed. The body of the pre-227 method, verbatim.</summary>
-    private static FlashResult FlashOne(FlashRequest flash, IPropertyPackage package, IMaterialStream feed, List<string> resolvedCompounds)
+    private static FlashResult FlashOne(FlashRequest flash, IPropertyPackage package, IMaterialStream feed,
+        List<string> resolvedCompounds, SolidsContext solidsContext)
     {
         // Map flashType → FlashCalculationType + the two spec values in SI.
         DWSIM.Interfaces.Enums.FlashCalculationType calcType;
@@ -689,6 +755,16 @@ static class Modes
         if (result.GetSolidPhaseMoleFraction() is double sf && double.IsFinite(sf) && sf > 1e-9)
             phases.Add(BuildPhase("Solid", sf, result.GetSolidPhaseMoleFractions() ?? [], compoundsInOrder));
 
+        // 281 — the same two rules the solve harvest applies, on the same shape.
+        var judged = phases.Select(p => (p.Phase, (IReadOnlyDictionary<string, double>?)p.Composition)).ToList();
+        if (SolidsCheck.SolidInFluid(null, judged, solidsContext.Solids).FirstOrDefault() is { } mislabelled)
+            throw new WorkerInputException("SOLID_REPORTED_AS_FLUID", mislabelled.Message);
+        var flashWarnings = SolidsCheck.BelowMeltingPoint(null,
+            result.CalculatedTemperature is double tKelvin && double.IsFinite(tKelvin) ? tKelvin - 273.15 : null,
+            judged, solidsContext.MeltingPointK, solidsContext.Solids);
+        var withholdEnergy = solidsContext.Solids.Count > 0;
+        if (withholdEnergy) flashWarnings.Add(SolidsCheck.EnergyWarning);
+
         // Engine-side T/P/h/s; null when the calc didn't converge on them.
         //
         // NO UNIT CONVERSION. DWSIM's CalculatedEnthalpy/CalculatedEntropy are ALREADY kJ/kg and
@@ -707,8 +783,8 @@ static class Modes
         // Entropy was worse than mislabelled, it was DESTROYED: water at 15 C has
         // s = 0.2244 kJ/kg.K, which /1000 makes 0.000224, which Math.Round(_, 3) below turns
         // into 0. Multiplying cannot recover a value that has been rounded away.
-        double? enthalpyKJKg = result.CalculatedEnthalpy is double h && double.IsFinite(h) ? h : null;
-        double? entropyKJKgK = result.CalculatedEntropy is double se && double.IsFinite(se) ? se : null;
+        double? enthalpyKJKg = !withholdEnergy && result.CalculatedEnthalpy is double h && double.IsFinite(h) ? h : null;
+        double? entropyKJKgK = !withholdEnergy && result.CalculatedEntropy is double se && double.IsFinite(se) ? se : null;
 
         // DENSITY. `FlashCalculationResult` carries T/P/h/s and phase mole fractions — no density —
         // so it comes from the scratch feed stream instead: set it to the state the flash just found
@@ -744,7 +820,8 @@ static class Modes
             Phases: phases,
             EnthalpyKJKg:  enthalpyKJKg is double e ? Math.Round(e, 3) : null,
             EntropyKJKgK:  entropyKJKgK is double ek ? Math.Round(ek, 3) : null,
-            DensityKgM3:   densityKgM3);
+            DensityKgM3:   densityKgM3,
+            Warnings:      flashWarnings.Count > 0 ? flashWarnings : null);
 
         static PhaseOut BuildPhase(string label, double moleFrac, IReadOnlyList<double> moleFracs, List<string> compounds)
         {
@@ -848,7 +925,13 @@ static class Modes
 
 record CatalogResult(string EngineVersion, List<CompoundOut> Compounds,
     List<PropertyPackageOut> PropertyPackages, object UnitOpTypes,
-    List<EngineInventoryEntry> EngineInventory);
+    List<EngineInventoryEntry> EngineInventory,
+    SolidsOut Solids);
+
+/// 281 — the packages a defined solid may be solved under, and the values a solid definition must
+/// carry with the one unit each is accepted in. Both read off the tables that do the enforcing.
+record SolidsOut(List<string> Packages, List<SolidValueOut> Values);
+record SolidValueOut(string Key, string Unit);
 
 /// One unit-op kind the engine declares. `ExposedAs` is null when this runner has no wire type for it
 /// — which is the whole point of the record: an absent capability that says so (099 FR-004).
@@ -872,7 +955,9 @@ record FlashRequest(List<string> Compounds, FlowComposition Composition, string 
     // 120 US2 — dimensionless molar vapor fraction spec for PVF/TVF.
     FlowQuantity? VaporFraction = null,
     // iskra spec 227 — a batch: N spec sets against this base; a state's spec overrides the base's.
-    List<FlashState>? States = null);
+    List<FlashState>? States = null,
+    // 281 — compounds the engine does not ship, defined on the request (see CompoundDefinitions).
+    JsonElement? CompoundDefinitions = null);
 record FlashState(FlowQuantity? Temperature, FlowQuantity? Pressure, FlowQuantity? Enthalpy,
     FlowQuantity? Entropy, FlowQuantity? VaporFraction);
 /// <summary>One entry per state, in order: a FlashResult, or an ErrorDoc for a state the engine refused.</summary>
@@ -881,7 +966,9 @@ record FlashBatchResult(List<object> Results);
 record FlashResult(double VaporFraction, double? TemperatureC, double? PressureBar,
     List<PhaseOut> Phases, double? EnthalpyKJKg, double? EntropyKJKgK,
     // Nullable and last: a density the engine would not give must not fail a converged flash.
-    double? DensityKgM3 = null);
+    double? DensityKgM3 = null,
+    // 281 — absent unless there is something to say.
+    List<string>? Warnings = null);
 record PhaseOut(string Phase, double MolarFraction, Dictionary<string, double> Composition);
 
 record PfdResult(string PngBase64);

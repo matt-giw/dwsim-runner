@@ -200,6 +200,35 @@ public sealed record UnitOpTypesResponse(string? EngineVersion, JsonElement Unit
 /// <param name="EngineInventory">Every unit-op kind the engine declares.</param>
 public sealed record EngineInventoryResponse(string? EngineVersion, List<EngineInventoryEntryResponse> EngineInventory);
 
+/// <summary>What this runner needs, and enforces, for a compound defined as a solid.</summary>
+/// <param name="EngineVersion">The engine build this was read from.</param>
+/// <param name="Solids">The allowlist and the required values.</param>
+public sealed record SolidsResponse(string? EngineVersion, SolidsEntry Solids);
+
+/// <param name="Packages">
+/// Package ids measured to place a defined solid in a solid phase. Any other package is refused
+/// with SOLIDS_UNSUPPORTED_PACKAGE when the request defines a solid.
+/// </param>
+/// <param name="Values">Every value a solid definition must carry, with the one unit it is accepted in.</param>
+public sealed record SolidsEntry(List<string> Packages, List<SolidValueEntry> Values);
+
+/// <param name="Key">The value's key under a definition's <c>values</c>.</param>
+/// <param name="Unit">The only unit accepted. Anything else is INVALID_UNIT — never converted.</param>
+public sealed record SolidValueEntry(string Key, string Unit);
+
+/// <summary>
+/// A compound the engine does not ship, defined on the request that uses it. It exists for that
+/// one request: the runner stores nothing. Send physical values only — the runner adds what the
+/// engine's equations of state need beyond them.
+/// </summary>
+/// <param name="Name">Must appear in the request's <c>compounds</c> and must not be an engine compound.</param>
+/// <param name="Formula">Reported back on results; not used in any calculation.</param>
+/// <param name="CasNumber">Optional.</param>
+/// <param name="Kind">"solid". "fluid" is refused with COMPOUND_KIND_UNSUPPORTED — it has not been measured.</param>
+/// <param name="Values">Every key GET /catalog/solids lists, each a quantity in the listed unit.</param>
+public sealed record CompoundDefinitionRequest(
+    string Name, string? Formula, string? CasNumber, string Kind, Dictionary<string, QuantityRequest> Values);
+
 /// <summary>One unit-op kind the engine declares.</summary>
 /// <param name="Name">The engine's internal type name.</param>
 /// <param name="DisplayName">The engine's human-facing name.</param>
@@ -410,9 +439,14 @@ public sealed record ValidationResponse(bool Valid, List<IssueResponse> Issues);
 /// <param name="EnthalpyKJKg">Mixture specific enthalpy, kJ/kg.</param>
 /// <param name="EntropyKJKgK">Mixture specific entropy, kJ/(kg.K).</param>
 /// <param name="DensityKgM3">Mixture density, kg/m3, when the engine reports one.</param>
+/// <param name="Warnings">
+/// Present only when there is one. Today: BELOW_MELTING_POINT_AS_LIQUID — a liquid phase that is
+/// mostly a compound below its own melting point. The numbers are unchanged by a warning.
+/// </param>
 public sealed record FlashResponse(
     double VaporFraction, double? TemperatureC, double? PressureBar,
-    List<FlashPhaseResponse> Phases, double? EnthalpyKJKg, double? EntropyKJKgK, double? DensityKgM3);
+    List<FlashPhaseResponse> Phases, double? EnthalpyKJKg, double? EntropyKJKgK, double? DensityKgM3,
+    List<string>? Warnings = null);
 
 /// <summary>One phase of a flash result.</summary>
 /// <param name="Phase">"vapor", "liquid", "liquid2" or "solid".</param>
@@ -539,6 +573,10 @@ public sealed record OptimizeObjectiveRequest(string Object, string Property, st
 /// <param name="Enthalpy">Required by PH.</param>
 /// <param name="Entropy">Required by PS.</param>
 /// <param name="VaporFraction">Dimensionless molar vapour fraction. Required by PVF and TVF.</param>
+/// <param name="CompoundDefinitions">
+/// iskra spec 281 — compounds the engine does not ship, an array of <see cref="CompoundDefinitionRequest"/>.
+/// A defined solid requires a package listed by GET /catalog/solids.
+/// </param>
 /// <param name="States">
 /// iskra spec 227 — a BATCH. Up to 100 spec sets evaluated against this base in ONE worker
 /// process: compounds, composition and package are set up once. A state's spec overrides the
@@ -550,7 +588,10 @@ public sealed record FlashRequestDto(
     List<string>? Compounds, CompositionRequest? Composition, string? PropertyPackage,
     string? FlashType, QuantityRequest? Temperature, QuantityRequest? Pressure,
     QuantityRequest? Enthalpy, QuantityRequest? Entropy, QuantityRequest? VaporFraction,
-    List<FlashStateRequest>? States = null);
+    List<FlashStateRequest>? States = null,
+    // 281 — raw, like `document`: the worker validates it collect-all and names what is wrong.
+    // Bound here only so it survives the re-serialisation the worker is handed.
+    JsonElement? CompoundDefinitions = null);
 
 /// <summary>One state of a batch flash: the specs that vary. Anything omitted comes from the base request.</summary>
 public sealed record FlashStateRequest(
@@ -587,11 +628,15 @@ public sealed record CompositionRequest(string? Basis, Dictionary<string, double
 /// <param name="Compounds">Engine compound names — GET /catalog/compounds.</param>
 /// <param name="PropertyPackage">A package id — GET /catalog/property-packages, e.g. "STEAM".</param>
 /// <param name="ReactionSets">Required by reactor types that declare requiresReactionSet.</param>
+/// <param name="CompoundDefinitions">
+/// iskra spec 281 — compounds the engine does not ship, each a <see cref="CompoundDefinitionRequest"/>.
+/// </param>
 /// <param name="Objects">Streams and unit ops. Tags must be unique.</param>
 /// <param name="Connections">How the objects are wired together.</param>
 public sealed record DocumentSchema(
     int SchemaVersion, string? Name, List<string>? Compounds, string? PropertyPackage,
-    List<JsonElement>? ReactionSets, List<DocumentObject>? Objects, List<DocumentConnection>? Connections);
+    List<JsonElement>? ReactionSets, List<DocumentObject>? Objects, List<DocumentConnection>? Connections,
+    List<CompoundDefinitionRequest>? CompoundDefinitions = null);
 
 /// <summary>
 /// A stream or unit op. <c>tag</c> is the join key results are folded back on and must be unique.

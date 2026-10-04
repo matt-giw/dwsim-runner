@@ -56,6 +56,15 @@
       <HintPath>$(DwsimPath)/DWSIM.UnitOperations.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- 281: CompoundDefinitions.Build returns a ConstantProperties and Register takes an Automation3. -->
+    <Reference Include="DWSIM.Thermodynamics">
+      <HintPath>$(DwsimPath)/DWSIM.Thermodynamics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DWSIM.Automation">
+      <HintPath>$(DwsimPath)/DWSIM.Automation.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- ShortcutColumn implements ICapeIdentification; the compiler needs the defining assembly. -->
     <Reference Include="CapeOpen">
       <HintPath>$(DwsimPath)/CapeOpen.dll</HintPath>

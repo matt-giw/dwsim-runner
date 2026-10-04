@@ -356,7 +356,7 @@ Rendered flowsheet diagram, `image/png`, cached by template mtime. Failures stay
 
 ## Catalog
 
-Four sections of one payload the worker produces in `catalog` mode, fetched once per engine
+Five sections of one payload the worker produces in `catalog` mode, fetched once per engine
 version and served from memory. Each returns `{ engineVersion, <section> }`.
 
 | Route | Section shape |
@@ -365,6 +365,7 @@ version and served from memory. Each returns `{ engineVersion, <section> }`.
 | `GET /catalog/property-packages` | `[{ id, name, description }]` |
 | `GET /catalog/unit-op-types` | port and parameter schema per wire type — the source for legal `type`, `port` and `parameters` values in a document |
 | `GET /catalog/engine-inventory` | `[{ name, displayName, source, instantiable, exposedAs }]` |
+| `GET /catalog/solids` | `{ packages: [id], values: [{ key, unit }] }` — see [Compound definitions](#compound-definitions) |
 
 `engine-inventory` is what the **engine** declares versus what this runner **exposes**:
 `exposedAs: null` means DWSIM has the unit op and this runner has no wire type for it. An absent
@@ -740,8 +741,11 @@ Single-point thermodynamics, no flowsheet.
 | `TVF` | `temperature` + `vaporFraction` |
 
 Anything else is `400 FLASH_INVALID`. `TH` and `TS` are **not supported** — they kill the worker
-process outright (measured under both STEAM and PR). `PSF`/`TSF` need solids handling this runner
-does not select.
+process outright (measured under both STEAM and PR). `PSF`/`TSF` (solid-fraction specs) are not
+exposed. Solids themselves are handled: see [Compound definitions](#compound-definitions).
+
+`/flash` accepts `compoundDefinitions` exactly as a document does, and its response carries a
+`warnings` array when there is something to say (absent otherwise).
 
 > **`TVF` is refused for a single compound** (`400 FLASH_INVALID`). There the engine ignores
 > `vaporFraction` and returns the same state for every value; use `PVF`. `TVF` on a mixture is
@@ -763,6 +767,9 @@ worker would have run.
 ---
 
 ## The document schema
+
+`compoundDefinitions` (optional) is described under [Compound definitions](#compound-definitions).
+
 
 The body of `document` for `/flowsheets/validate`, `/flowsheets/build-solve`, `/flowsheets/pfd`,
 and the document form of `/compare` and `/optimize`.
@@ -805,6 +812,93 @@ and the document form of `/compare` and `/optimize`.
   `GET /catalog/unit-op-types`. Do not hardcode them.
 - Every quantity is `{ value, unit? }`. Omit `unit` for SI.
 - An outlet stream is declared with **no `spec`** — it is what the solve produces.
+
+## Compound definitions
+
+A compound the engine does not ship can be **defined on the request that uses it**: on a document
+(`validate`, `build-solve`, `pfd`) and on `/flash`. The definition exists for that one request. The
+runner stores nothing — one worker process per job, and a second request that names the compound
+without defining it gets `UNKNOWN_COMPOUND`. Whoever calls owns the library.
+
+```jsonc
+"compounds": ["Water", "Iron"],
+"propertyPackage": "RAOULT",
+"compoundDefinitions": [
+  { "name": "Iron", "formula": "Fe", "casNumber": "7439-89-6", "kind": "solid",
+    "values": {
+      "molarWeight":            { "value": 55.845, "unit": "g/mol" },
+      "meltingPoint":           { "value": 1811,   "unit": "K" },
+      "enthalpyOfFusion":       { "value": 13.81,  "unit": "kJ/mol" },
+      "solidDensity":           { "value": 7874,   "unit": "kg/m3" },
+      "solidHeatCapacity":      { "value": 25.1,   "unit": "J/[mol.K]" },
+      "enthalpyOfFormation":    { "value": 0,      "unit": "kJ/mol" },
+      "gibbsEnergyOfFormation": { "value": 0,      "unit": "kJ/mol" } } }
+]
+```
+
+- **Send physics only.** Every key above is required and nothing else is accepted. The engine also
+  needs critical properties and a vapour pressure for any compound; for a solid those have no
+  physical meaning, so the runner supplies placeholders itself. Formation properties are converted
+  to the engine's per-kilogram storage here, in one place.
+- **One unit per value, exactly as listed** by `GET /catalog/solids`. Any other spelling is
+  `INVALID_UNIT`. Nothing is converted: 1538 °C read as kelvin converges.
+- **`kind` is `"solid"`.** `"fluid"` is refused (`COMPOUND_KIND_UNSUPPORTED`): what the engine needs
+  to solve with a user-defined liquid or gas has not been measured.
+- At most 50 definitions.
+
+### A defined solid is solid, or the request is refused
+
+Measured 2026-10-04 on DWSIM 9.0.5.0: under the engine's default flash a defined solid in a mixture
+comes back as a **liquid**, converged. So:
+
+1. A request that defines a solid is accepted only under a package in `GET /catalog/solids`
+   (today: `RAOULT`), and is solved with the flash setting measured to place solids in a solid
+   phase. Any other package is `SOLIDS_UNSUPPORTED_PACKAGE`. Peng-Robinson is absent on purpose —
+   at 25 °C with water it is wrong under every setting tried.
+2. After the solve, a defined solid found above 1e-6 mole fraction in a vapour or liquid phase
+   turns the result into `SOLID_REPORTED_AS_FLUID`. The caller never receives the mislabelled
+   payload.
+
+**A defined solid works where no liquid phase coexists with it, and is refused where one does.**
+Measured live: iron + steam at 700 °C reports the iron solid and the steam vapour, exactly. Iron +
+liquid water at 25 °C comes back with 0.95 % of the iron "dissolved" in the water — the ideal
+solubility the engine's solid–liquid model computes from the enthalpy of fusion, and not a property
+of iron. The guard refuses it. So gas–solid systems are served; a slurry is not, and says so.
+
+A request with **no** solid definition is flashed exactly as before; none of the engine's own
+compounds is flagged always-solid, so no existing document changes.
+
+| Code | Document routes | `/flash` |
+|---|---|---|
+| `COMPOUND_DEFINITION_INVALID` · `COMPOUND_DEFINITION_CONFLICT` · `COMPOUND_KIND_UNSUPPORTED` · `INVALID_UNIT` · `DOCUMENT_TOO_LARGE` | 422, in `issues[]`; the top-level `error` is the first of these | 400 |
+| `SOLIDS_UNSUPPORTED_PACKAGE` | 422 | 400 |
+| `SOLID_REPORTED_AS_FLUID` | 422, one issue per stream and phase | 400 |
+
+`COMPOUND_DEFINITION_CONFLICT` is a name that is already an engine compound (any case), or two
+definitions sharing one.
+
+**Energy results are withheld on any request that defines a solid.** Measured 2026-10-05: the
+phases a defined solid lands in do not move when the runner's placeholders are varied, but the
+stream's enthalpy moves by up to 4× with the critical temperature, critical pressure and boiling
+point placeholders — the engine reaches a solid's enthalpy through an ideal-gas reference and a
+vaporisation step those control. So on such a request every duty and power is `null`, every
+enthalpy, entropy and free-energy key is absent from the property bags, `/flash` reports no
+`enthalpyKJKg`/`entropyKJKgK`, a `PH` or `PS` flash is refused, and the response carries
+`SOLID_ENTHALPY_UNMEASURED` in `warnings`. The mass balance and the phase split are reported.
+
+**Not measured, so not promised:** whether any setting keeps a defined solid out of a coexisting
+liquid; whether a vaporisation-enthalpy correlation evaluating to zero would make the solid's
+enthalpy follow its own heat capacity (the path to reporting energy again);
+the density reported for its solid phase; an equilibrium or conversion reactor with solid reactants.
+
+### `BELOW_MELTING_POINT_AS_LIQUID` — a warning, on every route
+
+An ordinary engine compound that makes up **more than half of a liquid phase** while the stream is
+below that compound's melting point gets a warning naming it. Naphthalene + water at 25 °C (a 94 %
+naphthalene "liquid") is the case it is for. It is a warning and not a refusal because the runner
+cannot tell a precipitate from a solution: naphthalene at 5 mol% in toluene is genuinely dissolved,
+is not warned, and must not be refused. It changes no number. The threshold is a heuristic and is
+wrong under strong freezing-point depression (60 % water in glycol at −20 °C will warn).
 
 ## Validation issue codes
 

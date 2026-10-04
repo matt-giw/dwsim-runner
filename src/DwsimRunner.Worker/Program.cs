@@ -280,6 +280,10 @@ static class Solver
         // a template solve reports cannot differ from a document solve's for the same flowsheet.
         var (streams, energy, unitOps) = Modes.Harvest(fs);
 
+        // 281 — a template carries no compound definitions, so there is no solid to guard; the
+        // melting-point warning still applies, through the helper build-solve uses.
+        warnings.AddRange(Modes.MeltingPointWarnings(fs, streams, new HashSet<string>()));
+
         return new SolveResult(converged, sw.ElapsedMilliseconds, streams, energy, unitOps, warnings,
                                PropertyUnits: PhaseProperties.UnitsForResponse());
     }
