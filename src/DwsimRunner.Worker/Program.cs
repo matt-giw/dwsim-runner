@@ -53,6 +53,7 @@ try
         "build-solve"  => Modes.BuildSolve(job),
         "flash"        => Modes.Flash(job),
         "pfd"          => Modes.Pfd(job),
+        "read"         => Reader.Read(job),   // iskra 285 — a DWSIM file → runner document
         _              => Solver.Run(job),   // "solve" (default for spec-001 back-compat)
     };
 }
@@ -64,7 +65,7 @@ catch (WorkerInputException ex)
 catch (TemplateLoadException ex)
 {
     exitCode = 3;
-    payload = new ErrorDoc("TEMPLATE_LOAD_FAILED", ex.Message, null);
+    payload = new ErrorDoc(ex.Code, ex.Message, null);
 }
 catch (BuildAbortException ex)
 {
@@ -169,7 +170,12 @@ class WorkerInputException(string code, string message, string? detail = null) :
     public string? Detail { get; } = detail;
 }
 
-class TemplateLoadException(string message) : Exception(message);
+// `code` is the error the API passes through: TEMPLATE_LOAD_FAILED for a stored template, and
+// iskra 285's LOAD_FAILED for an uploaded file, whose message is the full exception chain.
+class TemplateLoadException(string message, string code = "TEMPLATE_LOAD_FAILED") : Exception(message)
+{
+    public string Code { get; } = code;
+}
 class RenderFailedException(string message) : Exception(message);
 
 static class Solver
