@@ -975,6 +975,114 @@ static IResult PngOrError(HttpContext http, CaseOutcome outcome)
         "application/json", statusCode: StatusCodes.Status422UnprocessableEntity);
 }
 
+// iskra spec 285 (ISK-485) — read: open a DWSIM file with DWSIM's OWN loader (worker `read` mode;
+// only the worker loads DWSIM) and answer it as a runner document. The cheap refusals happen here,
+// before any spawn: the format is SNIFFED from the bytes, never taken from the extension (measured:
+// FOSSEE's sourwater.dwxmz is XML with a BOM), and a zip is inspected from its central directory
+// without extracting anything. The temp file goes on every path, caller abort included — the
+// worker kill on abort is the shared spawn path's (ISK-541), nothing here.
+const long ReadMaxBytes = 25L * 1024 * 1024;
+const long ReadMaxUnpackedBytes = 200L * 1024 * 1024;
+var readTempPath = Cfg("READ_TEMP_PATH", Path.Combine(Path.GetTempPath(), "dwsim-read"));
+app.MapPost("/flowsheets/read", async (HttpRequest request, int? timeoutSeconds, CancellationToken ct) =>
+{
+    IResult TooLarge() => ErrorResult(StatusCodes.Status413PayloadTooLarge, "FILE_TOO_LARGE",
+        $"the file is larger than {ReadMaxBytes / (1024 * 1024)} MB");
+    if (request.ContentLength > ReadMaxBytes) return TooLarge();
+
+    byte[] bytes;
+    try
+    {
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int n;
+        while ((n = await request.Body.ReadAsync(chunk, ct)) > 0)
+        {
+            if (buffer.Length + n > ReadMaxBytes) return TooLarge();
+            buffer.Write(chunk, 0, n);
+        }
+        bytes = buffer.ToArray();
+    }
+    catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+    {
+        return TooLarge();   // a chunked body past Kestrel's own limit
+    }
+
+    var (extension, refusal) = SniffDwsimFile(bytes);
+    if (refusal is not null) return refusal;
+
+    Directory.CreateDirectory(readTempPath);
+    var file = Path.Combine(readTempPath, $"dwsim-read-{Guid.NewGuid():N}{extension}");
+    try
+    {
+        await File.WriteAllBytesAsync(file, bytes, ct);
+        app.Logger.LogInformation("read: fileName={FileName} bytes={Bytes} format={Format}",
+            request.Headers["X-File-Name"].ToString(), bytes.Length, extension);
+        var timeout = TimeSpan.FromSeconds(timeoutSeconds is { } to ? Math.Clamp(to, 1, MaxTimeoutSeconds) : 120);
+        var outcome = await RunDocumentModeAsync(JsonSerializer.SerializeToElement(file), "read", timeout, null, ct,
+            payloadKey: "template");
+        if (outcome.Status == StatusCodes.Status429TooManyRequests)
+            request.HttpContext.Response.Headers.RetryAfter = "5";
+        return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
+    }
+    finally
+    {
+        try { File.Delete(file); } catch { /* best effort; the directory is the runner's own */ }
+    }
+})
+    .WithTags("Documents")
+    .WithSummary("Open a DWSIM file (.dwxmz or .dwxml) and return it as a runner document.")
+    .WithDescription("iskra spec 285. Body: the raw file bytes (application/octet-stream), at most 25 MB; the format is sniffed, never taken from X-File-Name. 413 FILE_TOO_LARGE / UNPACKED_TOO_LARGE (zip entries over 200 MB, checked before extraction), 415 NOT_A_DWSIM_FILE (not a zip or XML, a zip with no .xml entry, or a corrupt zip), 422 PASSWORD_PROTECTED or LOAD_FAILED (the engine's loader threw; message is the full inner-exception chain). Never cached.")
+    .Accepts<byte[]>("application/octet-stream")
+    .Produces<ReadResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status413PayloadTooLarge)
+    .Produces<ErrorResponse>(StatusCodes.Status415UnsupportedMediaType)
+    .Produces<ErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests)
+    .Produces<ErrorResponse>(StatusCodes.Status500InternalServerError)
+    .Produces<ErrorResponse>(StatusCodes.Status504GatewayTimeout);
+
+// The read route's format decision: zip magic → .dwxmz (after the central-directory checks), an XML
+// prolog or DWSIM root element after an optional UTF-8 BOM → .dwxml, anything else refused. The
+// extension chosen here is what makes DWSIM's loader take the right path: Automation3.LoadFlowsheet
+// unzips any file whose extension ends in "z" and parses everything else as XML.
+static (string? Extension, IResult? Refusal) SniffDwsimFile(byte[] bytes)
+{
+    static IResult NotDwsim(string why) => ErrorResult(StatusCodes.Status415UnsupportedMediaType, "NOT_A_DWSIM_FILE", why);
+
+    if (bytes is [0x50, 0x4B, 0x03, 0x04, ..])
+    {
+        try
+        {
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(bytes), System.IO.Compression.ZipArchiveMode.Read);
+            long unpacked = 0;
+            var hasXml = false;
+            foreach (var entry in zip.Entries)
+            {
+                if (entry.IsEncrypted)
+                    return (null, ErrorResult(StatusCodes.Status422UnprocessableEntity, "PASSWORD_PROTECTED",
+                        $"zip entry '{entry.FullName}' is encrypted; save the file without a password"));
+                unpacked += entry.Length;   // the DECLARED size, from the central directory
+                hasXml |= entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase);
+            }
+            if (unpacked > ReadMaxUnpackedBytes)
+                return (null, ErrorResult(StatusCodes.Status413PayloadTooLarge, "UNPACKED_TOO_LARGE",
+                    $"the zip declares {unpacked} bytes uncompressed; the limit is {ReadMaxUnpackedBytes}"));
+            return hasXml ? (".dwxmz", null) : (null, NotDwsim("the zip holds no .xml entry, so it is not a DWSIM file"));
+        }
+        catch (InvalidDataException ex)
+        {
+            return (null, NotDwsim($"the zip is corrupt or truncated: {ex.Message}"));
+        }
+    }
+
+    var start = bytes is [0xEF, 0xBB, 0xBF, ..] ? 3 : 0;
+    var head = System.Text.Encoding.UTF8.GetString(bytes, start, Math.Min(512, bytes.Length - start)).TrimStart();
+    return head.StartsWith("<?xml", StringComparison.Ordinal) || head.StartsWith("<DWSIM_Simulation_Data", StringComparison.Ordinal)
+        ? (".dwxml", null)
+        : (null, NotDwsim("the file is neither a zip (.dwxmz) nor XML (.dwxml)"));
+}
+
 // One DOCUMENT-mode job: writes {mode, document|flash, savePath?, overrides?} and runs it through
 // the same admission control, SpawnWorkerAsync and ClassifyWorkerRun as a template case.
 // Worker payload shapes mirror the FakeWorker's expectations.

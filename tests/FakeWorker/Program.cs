@@ -221,6 +221,31 @@ switch (job.Mode?.ToLowerInvariant())
         Console.WriteLine("""{"pngBase64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}""");
         break;
 
+    case "read":
+    {
+        // iskra 285 — the file the route wrote is `template`. Echo its extension and size under
+        // "fake" so tests see what the sniffer decided; "__load-fail" in the bytes → exit 3 with a
+        // LOAD_FAILED chain, "__sleep:N" → sleep first.
+        var path = job.Template!;
+        var text = File.ReadAllText(path);
+        var sleep = System.Text.RegularExpressions.Regex.Match(text, @"__sleep:(\d+)");
+        if (sleep.Success) Thread.Sleep(TimeSpan.FromSeconds(int.Parse(sleep.Groups[1].Value)));
+        if (text.Contains("__load-fail"))
+        {
+            Console.WriteLine("""{"error":"LOAD_FAILED","message":"System.TypeInitializationException: The type initializer for 'DWSIM.Logging.Logger' threw an exception.\n  System.IO.FileNotFoundException: Could not load file or assembly 'Fake'."}""");
+            return Done(3);
+        }
+        Console.WriteLine($$$"""
+        {"savedBy":"DWSIM 6.4.1","engineVersion":"9.0.5.0",
+         "document":{"schemaVersion":1,"name":"fake","compounds":["Water"],"propertyPackage":"STEAM","objects":[],"connections":[]},
+         "layout":{},"stored":{"solved":false,"streams":{},"energy":{}},
+         "placeholders":[],"ignored":[],
+         "propertyPackages":[{"name":"Steam Tables (IAPWS-IF97)","id":"STEAM","supported":true}],"warnings":[],
+         "fake":{"extension":"{{{Path.GetExtension(path)}}}","bytes":{{{new FileInfo(path).Length}}}}}
+        """.ReplaceLineEndings(""));
+        break;
+    }
+
     default:
         // Scripted objective for /optimize tests: a smooth parabola with its
         // minimum at 42 (value 7), evaluated at the "__objective" override.
