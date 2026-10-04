@@ -206,6 +206,15 @@ per-case race can still degrade to a per-case `QUEUE_FULL` entry inside a `200` 
 The two clamping rules differ and both are intentional: `/solve` **ignores** an out-of-range
 `timeoutSeconds` and falls back to the default, `build-solve` **clamps** it into range.
 
+**A caller that goes away stops its solve.** If the client disconnects (or aborts the request)
+while a worker is running, the API kills that worker's process tree, waits for it to exit (up to
+5 s), and only then releases the concurrency slot. There is no response to send; the access log
+records the request as `499` and the API logs `worker spawn: outcome=CANCELLED pid=…`. This is how a
+caller cancels: there is no cancel route. It applies to every route that runs the worker, because
+they all go through one spawn. Before ISK-541 the request was abandoned but the worker ran on — to
+its natural end, or indefinitely once its result outgrew the stdout pipe nobody was draining — and
+the slot was released while it did, so abandoned solves ran outside `MAX_CONCURRENT_SOLVES`.
+
 **The worker also bounds itself.** `WORKER_DEADLINE_SECONDS` (default 900) is a wall-clock ceiling
 the worker arms over its whole job before the first engine call, and it hard-exits when it fires.
 It sits above the 600 s a caller may request, so it is a backstop rather than a second policy — it
