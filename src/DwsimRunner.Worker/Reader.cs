@@ -277,6 +277,15 @@ internal static partial class Reader
             ms.GraphicObject?.InputConnectors is { Count: > 0 } ins && ins[0].IsAttached;
     }
 
+    /// <summary>The engine object's gate property holds the value the catalog declares (enum by member name).</summary>
+    private static bool GateIsSet(ISimulationObject so, GateDef gate)
+    {
+        var value = so.GetType().GetProperty(gate.Property)?.GetValue(so);
+        return value is not null && (value is Enum e && gate.Value is string member
+            ? e.ToString() == member
+            : Equals(value, Convert.ChangeType(gate.Value, value.GetType())));
+    }
+
     /// <summary>Why a non-catalog engine type is a placeholder.</summary>
     internal static string PlaceholderReason(ObjectType t) => t switch
     {
@@ -474,6 +483,9 @@ internal static partial class Reader
         {
             if (p.Name == "calcMode" || p.EngineProperties.Length == 0 || NotReadBack.Contains((def.Type, p.Name))) continue;
             if (mode is not null && def.CalcMode is { } c && !c.Reads(mode, p.Name)) continue;
+            // #31 review 3 — a gated value is a specification only when the file set its gates; with
+            // a gate off the engine holds a default it does not read (valve.openingPct = 50).
+            if (p.Gates is { Length: > 0 } gates && !gates.All(g => GateIsSet(so, g))) continue;
 
             object? raw;
             if (def.Type == "splitter" && p.Name == "splitRatio1")

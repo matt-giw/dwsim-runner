@@ -151,6 +151,23 @@ public class ReaderTests
         Assert.Equal(123.4, (double)Reader.ReadParameters(heater, UnitOpCatalog.Types["heater"], out _)["heatDuty"]!["value"]!, 6);
     }
 
+    // #31 review finding 3 — a GATED parameter is a specification only when its gates are set on the
+    // engine object. A Kv valve whose file never enabled the opening↔Kv relationship holds the default
+    // opening (50 %); emitting it, the build then enables the relationship and the Kv changes.
+    [Fact]
+    public void A_gated_parameter_whose_gate_is_off_is_not_emitted()
+    {
+        var def = UnitOpCatalog.Types["valve"];
+        var valve = new Valve { CalcMode = Valve.CalculationMode.Kv_General, Kv = 20 };
+        valve.GetType().GetProperty("EnableOpeningKvRelationship")!.SetValue(valve, false);
+
+        var bag = Reader.ReadParameters(valve, def, out var mode);
+
+        Assert.Equal("kvGeneral", mode);
+        Assert.True(bag.ContainsKey("kv"));
+        Assert.False(bag.ContainsKey("openingPct"), $"a default opening was emitted as a spec: {bag.ToJsonString()}");
+    }
+
     [Fact]
     public void A_collapsed_mode_reads_back_as_its_survivor()
     {
