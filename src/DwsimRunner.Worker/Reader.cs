@@ -673,7 +673,17 @@ internal static class Reader
             var node = new JsonObject
             {
                 ["tag"] = tag, ["type"] = type,
-                ["basis"] = rx.ReactionBasis.ToString(),
+                // The builder's basis vocabulary, not the enum's: "MassFrac" would fall through its
+                // switch to molar fractions.
+                ["basis"] = rx.ReactionBasis switch
+                {
+                    DWSIM.Interfaces.Enums.ReactionBasis.MassFrac => "mass",
+                    DWSIM.Interfaces.Enums.ReactionBasis.PartialPress => "partialPressure",
+                    DWSIM.Interfaces.Enums.ReactionBasis.MolarConc => "molarConcentration",
+                    DWSIM.Interfaces.Enums.ReactionBasis.Fugacity => "fugacity",
+                    DWSIM.Interfaces.Enums.ReactionBasis.Activity => "activity",
+                    _ => "Molar Fractions",
+                },
                 ["phase"] = rx.ReactionPhase.ToString(),
                 ["baseCompound"] = C(rx.BaseReactant),
                 ["stoichiometry"] = new JsonObject(rx.Components.Values.Select(s =>
