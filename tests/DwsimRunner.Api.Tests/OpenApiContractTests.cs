@@ -45,6 +45,7 @@ public class OpenApiContractTests
         "/catalog/units",
         "/flowsheets/validate",
         "/flowsheets/build-solve",
+        "/flowsheets/export",
         "/flowsheets/pfd",
         "/flash",
         "/solve",

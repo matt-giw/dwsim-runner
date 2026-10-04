@@ -775,6 +775,67 @@ app.MapPost("/flowsheets/build-solve", async (BuildSolveRequest req, HttpContext
     .Produces<ErrorResponse>(StatusCodes.Status500InternalServerError)
     .Produces<ErrorResponse>(StatusCodes.Status504GatewayTimeout);
 
+// iskra spec 286 (ISK-493) — export: the same build-solve worker mode, saving with the engine's own
+// SaveFlowsheet2 to a PRIVATE temp path, and the bytes back in THIS response. Not the template store:
+// that needs a writable shared directory and a second request that may land on another replica.
+// The temp file is deleted on every path. A caller hanging up is the shared spawn path's job (the
+// worker is killed and reaped there, ISK-541) — nothing here. Never cached: the save must run.
+var exportTempPath = Cfg("EXPORT_TEMP_PATH", Path.Combine(Path.GetTempPath(), "dwsim-export"));
+app.MapPost("/flowsheets/export", async (ExportRequest req, HttpContext http, CancellationToken ct) =>
+{
+    if (RequireDocument(req.Document) is { } bad) return bad;
+    var timeoutSeconds = req.TimeoutSeconds is { } to ? Math.Clamp(to, 5, MaxTimeoutSeconds) : 120;
+
+    var (model, catalogError) = await CatalogModelOrErrorAsync(ct);
+    if (catalogError is not null) return catalogError;
+    var structuralIssues = DocumentValidator.ValidateStructural(req.Document, model!);
+    if (structuralIssues.Any(i => i.Severity == "error"))
+    {
+        var issuesOut = structuralIssues.Select(i => new
+        {
+            severity = i.Severity, code = i.Code, tag = i.Tag, path = i.Path, message = i.Message
+        });
+        return Results.Json(new { error = "DOCUMENT_INVALID", issues = issuesOut }, statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    // Best effort: a directory that cannot be created means the engine writes nothing, and the
+    // check below answers SAVE_FAILED rather than an unstructured 500 (review of #30).
+    try { Directory.CreateDirectory(exportTempPath); } catch { /* reported as SAVE_FAILED below */ }
+    var savePath = Path.Combine(exportTempPath, $"export-{Guid.NewGuid():N}.dwxmz");
+    try
+    {
+        var outcome = await RunDocumentModeAsync(req.Document, "build-solve", TimeSpan.FromSeconds(timeoutSeconds), savePath, ct);
+        if (outcome.Status != StatusCodes.Status200OK)
+        {
+            if (outcome.Status == StatusCodes.Status429TooManyRequests) http.Response.Headers.RetryAfter = "5";
+            return Results.Content(outcome.Body, "application/json", statusCode: outcome.Status);
+        }
+        if (!File.Exists(savePath) || new FileInfo(savePath).Length == 0)
+            return ErrorResult(StatusCodes.Status500InternalServerError, "SAVE_FAILED",
+                "the flowsheet solved but the engine wrote no file");
+
+        // Read first: the X-Export-* headers go only on a response that carries the file.
+        var bytes = await File.ReadAllBytesAsync(savePath, ct);
+        var report = System.Text.Json.Nodes.JsonNode.Parse(outcome.Body);
+        http.Response.Headers["X-Export-Converged"] = (report?["converged"]?.GetValue<bool>() ?? false) ? "true" : "false";
+        http.Response.Headers["X-Export-Objects"] = (report?["build"]?["objectsCreated"]?.GetValue<int>() ?? 0).ToString();
+        return Results.Bytes(bytes, "application/octet-stream");
+    }
+    finally
+    {
+        try { File.Delete(savePath); } catch { /* best effort; the directory is the runner's own */ }
+    }
+})
+    .WithTags("Documents")
+    .WithSummary("Build and solve a document, and return the engine's own .dwxmz of it.")
+    .WithDescription("iskra spec 286. 200 is the file (application/octet-stream) with X-Export-Converged and X-Export-Objects headers; a case that did not converge is still a file. A save that wrote nothing is 500 SAVE_FAILED. The file is never stored on the runner.")
+    .Produces(StatusCodes.Status200OK, typeof(byte[]), "application/octet-stream")
+    .Produces<DocumentErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<DocumentErrorResponse>(StatusCodes.Status422UnprocessableEntity)
+    .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests)
+    .Produces<ErrorResponse>(StatusCodes.Status500InternalServerError)
+    .Produces<ErrorResponse>(StatusCodes.Status504GatewayTimeout);
+
 // Flash calculation without a flowsheet (US4, FR-FLASH): thermodynamics run
 // in the worker's `flash` mode; the route only rejects structurally hopeless
 // requests (bad flashType/spec pairing) before paying for a process spawn.

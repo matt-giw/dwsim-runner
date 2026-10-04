@@ -13,7 +13,8 @@
 //                       failures: "__unknown-compound" → exit 4 UNKNOWN_COMPOUND,
 //                       "__build-fail" → exit 4 BUILD_FAILED, "__not-converged"
 //                       → converged:false, "__sleep:N" (tag) → sleep first.
-//                       When savePath is set, writes a fake .dwxmz there.
+//                       When savePath is set, writes a fake .dwxmz there — unless a tag is
+//                       "__save-fail" (the engine's save threw and was swallowed).
 // mode == "flash"       returns a canned flash result; compound "__bad" → exit 2.
 // mode == "pfd"         returns { "pngBase64": <1x1 PNG> }; tag "__render-fail" → exit 5.
 // Every invocation drops run-{guid}.start/.end marker files (UTC ticks) into
@@ -77,6 +78,18 @@ if (job.Document is { ValueKind: JsonValueKind.Object } doc
     foreach (var o in objs.EnumerateArray())
         if (o.TryGetProperty("tag", out var tag) && tag.GetString() is { } tg)
             docTags.Add(tg);
+
+// iskra 286 — the save file is written BEFORE any sleep, so a timeout or a caller hanging up meets a
+// file on disk and the API's cleanup is actually exercised (it was written after, so the "no file
+// left" assertions could not fail). "__save-fail" is the engine's swallowed SaveFlowsheet2 exception:
+// no file at all.
+// Like the real worker: no save after a build failure (it never reaches the save), and a save that
+// cannot be written is swallowed whatever it throws (SafeSave catches Exception).
+if (job.Mode?.ToLowerInvariant() == "build-solve" && job.SavePath is { Length: > 0 } savePath
+    && !docTags.Contains("__save-fail") && !docTags.Contains("__build-fail") && !docTags.Contains("__unknown-compound"))
+{
+    try { File.WriteAllText(savePath, "fake dwxmz written by FakeWorker"); } catch (Exception) { }
+}
 
 foreach (var tg in docTags)
     if (tg.StartsWith("__sleep:") && int.TryParse(tg["__sleep:".Length..], out var ds))
@@ -166,8 +179,7 @@ switch (job.Mode?.ToLowerInvariant())
             """.ReplaceLineEndings(""));
             return Done(4);
         }
-        if (job.SavePath is { Length: > 0 } sp)
-            File.WriteAllText(sp, "fake dwxmz written by FakeWorker");
+        // (the save file, if any, was written above — before any sleep)
         var converged = docTags.Contains("__not-converged") ? "false" : "true";
         Console.WriteLine($$$"""
         {"converged":{{{converged}}},"elapsedMs":7,
