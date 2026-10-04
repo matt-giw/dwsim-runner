@@ -523,7 +523,14 @@ internal static class Reader
         var bag = new JsonObject();
         var wired = new List<(string, string)>();
         var problems = new List<string>();
-        var stageIndex = col.Stages.Select((s, i) => (s.ID, i)).ToDictionary(x => x.ID, x => x.i);
+        // AssociatedStage holds the stage's NAME (Column.ConnectFeed sets it from Stages[i].Name —
+        // read in the IL after the first round trip lost feedStage); IDs are kept as a fallback.
+        var stageIndex = new Dictionary<string, int>();
+        for (var i = col.Stages.Count - 1; i >= 0; i--)
+        {
+            if (col.Stages[i].Name is { Length: > 0 } sn) stageIndex[sn] = i;
+            if (col.Stages[i].ID is { Length: > 0 } sid) stageIndex.TryAdd(sid, i);
+        }
 
         foreach (var si in col.MaterialStreams.Values)
         {
@@ -549,14 +556,14 @@ internal static class Reader
         foreach (var si in col.EnergyStreams.Values)
         {
             if (!tags.TryGetValue(si.StreamID ?? "", out var stream)) continue;
-            // The condenser duty leaves the column; the reboiler duty enters it. Measured on FOSSEE
-            // files: a duty's AssociatedStage is not a stage ID, so the behaviour decides first.
+            // The condenser duty leaves the column; the reboiler duty enters it. The behaviour
+            // decides first, then the stage the duty is on.
+            var stage = stageIndex.TryGetValue(si.AssociatedStage ?? "", out var at) ? at : -1;
             var port = si.StreamBehavior switch
             {
                 SepOps.StreamInformation.Behavior.Distillate => "Condenser Duty",
                 SepOps.StreamInformation.Behavior.BottomsLiquid => "Reboiler Duty",
-                _ => si.AssociatedStage == col.Stages[0].ID ? "Condenser Duty"
-                   : si.AssociatedStage == col.Stages[^1].ID ? "Reboiler Duty" : null,
+                _ => stage == 0 ? "Condenser Duty" : stage == col.Stages.Count - 1 ? "Reboiler Duty" : null,
             };
             if (port is null) problems.Add($"energy stream '{stream}' ({si.StreamBehavior}, stage '{si.AssociatedStage}') is neither the condenser nor the reboiler duty");
             else wired.Add((stream, port));

@@ -178,9 +178,19 @@ public class ReaderTests
         Apply("maxIterations", "250");
         ColumnConfigurator.Finish(col, doc with { Parameters = new() { ["maxIterations"] = default } });
 
-        var (bag, _, detail) = Reader.ReadColumn(col, []);
+        // ConnectFeed records the stage by NAME (first round trip lost feedStage reading it as an ID).
+        for (var i = 0; i < col.Stages.Count; i++) col.Stages[i].Name = $"Stage_{i + 1}";
+        col.MaterialStreams["feed-info"] = new DWSIM.UnitOperations.UnitOperations.Auxiliary.SepOps.StreamInformation
+        {
+            StreamID = "feed-object", AssociatedStage = "Stage_10",
+            StreamBehavior = DWSIM.UnitOperations.UnitOperations.Auxiliary.SepOps.StreamInformation.Behavior.Feed,
+        };
+
+        var (bag, wired, detail) = Reader.ReadColumn(col, new() { ["feed-object"] = "FEED" });
 
         Assert.Null(detail);
+        Assert.Contains(("FEED", "Feed"), wired);
+        Assert.Equal(10, (int)bag["feedStage"]!);
         Assert.Equal(14, (int)bag["numberOfStages"]!);
         Assert.Equal(2.5, (double)bag["refluxRatio"]!, 6);
         Assert.Equal(75.0, (double)bag["bottomsMolarFlow"]!["value"]!, 6);
