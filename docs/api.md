@@ -454,6 +454,25 @@ curl -s localhost:8080/flowsheets/build-solve -H 'content-type: application/json
 }' | jq '{converged, elapsedMs, build}'
 ```
 
+### `POST /flowsheets/export`
+
+`{ "document": {...}, "timeoutSeconds"?: 5..600 (default 120, clamped like build-solve) }` → the
+engine's own `.dwxmz` of the **solved** document (iskra spec 286). Same structural validation, same
+worker mode and the same pool as `build-solve`; the save goes to a private temp file
+(`EXPORT_TEMP_PATH`), never to the template store, and is deleted on every path.
+
+| Status | Body | When |
+|---|---|---|
+| `200` | `application/octet-stream` — the file. Headers `X-Export-Converged: true\|false`, `X-Export-Objects: <n>` | built, solved (converged or not), saved |
+| `400` | `DOCUMENT_INVALID` / `INVALID_REQUEST` | as build-solve |
+| `422` | `BUILD_FAILED`, `UNKNOWN_COMPOUND`, … | the engine refused construction |
+| `429` | `QUEUE_FULL` + `Retry-After: 5` | admission cap |
+| `500` | `SAVE_FAILED` | solved, but the engine wrote no file — never a `200` without bytes |
+| `504` | `SOLVE_TIMEOUT` | the timeout fired; worker killed |
+
+Never cached (the save must run). A caller that hangs up has its worker killed and reaped by the
+shared spawn path, and the temp file goes with the request.
+
 ### `POST /flowsheets/pfd`
 
 `{ "document": {...} }` → `image/png`. Auto-layout when object positions are absent. Errors stay
@@ -687,6 +706,7 @@ observes:
 | `WORKER_DEADLINE_SECONDS` | `900` | the worker's own wall-clock backstop ⇒ `504 SOLVE_TIMEOUT` |
 | `MAX_DOCUMENT_OBJECTS` / `_CONNECTIONS` / `_REACTIONS` / `_BYTES` | `500` / `1000` / `200` / `204800` | construction caps ⇒ `DOCUMENT_TOO_LARGE` |
 | `CACHE_SIZE` | `256` | LRU result-cache entries |
+| `EXPORT_TEMP_PATH` | `$TMPDIR/dwsim-export` | where `/flowsheets/export` writes its file for the length of one request |
 
 **Do not assume `MAX_CONCURRENT_SOLVES`.** The code falls back to 4 and the shipped images set 6.
 Read the effective value from `/health`'s `maxConcurrent`.

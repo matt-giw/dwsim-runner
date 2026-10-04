@@ -421,6 +421,11 @@ public sealed record ValidateRequest(JsonElement Document, bool? Semantic);
 public sealed record BuildSolveRequest(
     JsonElement Document, int? TimeoutSeconds, SaveAsTemplateRequest? SaveAsTemplate);
 
+/// <summary>iskra 286 — build, solve and return the engine's own .dwxmz save of a document.</summary>
+/// <param name="Document">The flowsheet document. See DocumentSchema.</param>
+/// <param name="TimeoutSeconds">Default 120, clamped to 5..600 — build-solve's rule.</param>
+public sealed record ExportRequest(JsonElement Document, int? TimeoutSeconds);
+
 /// <summary>
 /// Persist the built flowsheet as a user template. Conflicts are refused with 409 BEFORE the
 /// solve; an unwritable store is reported AFTER it as template.saved false.

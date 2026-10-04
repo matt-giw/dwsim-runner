@@ -13,7 +13,8 @@
 //                       failures: "__unknown-compound" → exit 4 UNKNOWN_COMPOUND,
 //                       "__build-fail" → exit 4 BUILD_FAILED, "__not-converged"
 //                       → converged:false, "__sleep:N" (tag) → sleep first.
-//                       When savePath is set, writes a fake .dwxmz there.
+//                       When savePath is set, writes a fake .dwxmz there — unless a tag is
+//                       "__save-fail" (the engine's save threw and was swallowed).
 // mode == "flash"       returns a canned flash result; compound "__bad" → exit 2.
 // mode == "pfd"         returns { "pngBase64": <1x1 PNG> }; tag "__render-fail" → exit 5.
 // Every invocation drops run-{guid}.start/.end marker files (UTC ticks) into
@@ -166,7 +167,9 @@ switch (job.Mode?.ToLowerInvariant())
             """.ReplaceLineEndings(""));
             return Done(4);
         }
-        if (job.SavePath is { Length: > 0 } sp)
+        // iskra 286 — "__save-fail" is the engine's swallowed SaveFlowsheet2 exception: the solve
+        // succeeds and no file appears.
+        if (job.SavePath is { Length: > 0 } sp && !docTags.Contains("__save-fail"))
             File.WriteAllText(sp, "fake dwxmz written by FakeWorker");
         var converged = docTags.Contains("__not-converged") ? "false" : "true";
         Console.WriteLine($$$"""
