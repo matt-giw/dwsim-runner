@@ -83,11 +83,12 @@ if (job.Document is { ValueKind: JsonValueKind.Object } doc
 // file on disk and the API's cleanup is actually exercised (it was written after, so the "no file
 // left" assertions could not fail). "__save-fail" is the engine's swallowed SaveFlowsheet2 exception:
 // no file at all.
+// Like the real worker: no save after a build failure (it never reaches the save), and a save that
+// cannot be written is swallowed whatever it throws (SafeSave catches Exception).
 if (job.Mode?.ToLowerInvariant() == "build-solve" && job.SavePath is { Length: > 0 } savePath
-    && !docTags.Contains("__save-fail"))
+    && !docTags.Contains("__save-fail") && !docTags.Contains("__build-fail") && !docTags.Contains("__unknown-compound"))
 {
-    // Like the real worker (Modes.BuildSolve): a save that cannot be written is swallowed.
-    try { File.WriteAllText(savePath, "fake dwxmz written by FakeWorker"); } catch (IOException) { }
+    try { File.WriteAllText(savePath, "fake dwxmz written by FakeWorker"); } catch (Exception) { }
 }
 
 foreach (var tg in docTags)

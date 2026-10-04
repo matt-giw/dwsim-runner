@@ -302,21 +302,7 @@ static class Modes
         // API infers save failure from the absence of the file and reports
         // a soft `template.saved:false` block rather than a 500.
         if (job.SavePath is { Length: > 0 } path)
-        {
-            try
-            {
-                auto.SaveFlowsheet2(fs, path);
-            }
-            catch (Exception)
-            {
-                // Swallow: the solve succeeded; the file won't exist, and
-                // the API sets template.saved:false (export: SAVE_FAILED).
-                // iskra 286 — make "won't exist" TRUE: a save that failed
-                // part-way can leave a truncated archive, which the API's
-                // "exists and is not empty" check would serve as a 200.
-                try { if (File.Exists(path)) File.Delete(path); } catch { /* nothing more to do */ }
-            }
-        }
+            SafeSave.Run(path, p => auto.SaveFlowsheet2(fs, p));
 
         return new BuildReport(
             Converged: converged,
