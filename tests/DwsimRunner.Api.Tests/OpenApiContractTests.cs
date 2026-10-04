@@ -50,6 +50,7 @@ public class OpenApiContractTests
         "/solve",
         "/compare",
         "/optimize",
+        "/flowsheets/read",
     ];
 
     private static async Task<JsonElement> SpecAsync(RunnerHost host)

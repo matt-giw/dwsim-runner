@@ -593,3 +593,74 @@ public sealed record DocumentObject(
 /// be connected or the document is refused with MISSING_REQUIRED_PORT.
 /// </param>
 public sealed record DocumentConnection(string From, string To, string Port);
+
+// ── iskra 285: POST /flowsheets/read ─────────────────────────────────────
+
+/// <summary>
+/// A DWSIM file opened with DWSIM's own loader and described in this runner's vocabulary. Every
+/// simulation object and process graphic appears exactly once across <c>document.objects</c>,
+/// <c>placeholders</c> and <c>ignored</c>.
+/// </summary>
+/// <param name="SavedBy">"DWSIM &lt;BuildVersion&gt;" as the file states it; null when it states none.</param>
+/// <param name="EngineVersion">The DWSIM library that loaded it.</param>
+/// <param name="Document">
+/// A schemaVersion-1 document in the shape POST /flowsheets/build-solve accepts. It holds the file's
+/// SPECIFICATIONS only — feeds, unit-op parameters the runner can read back, connections — and never
+/// a stored result.
+/// </param>
+/// <param name="Layout">Tag → { x, y, w, h } from the file's graphic objects.</param>
+/// <param name="Stored">The file's own RESULTS, SI, never mixed into <c>document</c>.</param>
+/// <param name="Placeholders">Blocks the runner cannot express as a document object.</param>
+/// <param name="Ignored">Graphic objects that are not process objects (tables, text, images).</param>
+/// <param name="PropertyPackages">
+/// Every property package in the file; <c>supported:false</c> is one build-solve could not run
+/// (CAPE-OPEN, SEAWATER, or a name the engine does not list).
+/// </param>
+/// <param name="Warnings">What the read could not carry into <c>document</c>, in words.</param>
+public sealed record ReadResponse(
+    string? SavedBy, string EngineVersion, JsonElement Document,
+    Dictionary<string, LayoutBox> Layout, StoredResults Stored,
+    List<PlaceholderResponse> Placeholders, List<IgnoredResponse> Ignored,
+    List<PropertyPackageRead> PropertyPackages, List<string> Warnings);
+
+/// <summary>A graphic object's box.</summary>
+/// <param name="X">Left, flowsheet units.</param>
+/// <param name="Y">Top, flowsheet units.</param>
+/// <param name="W">Width.</param>
+/// <param name="H">Height.</param>
+public sealed record LayoutBox(double X, double Y, double W, double H);
+
+/// <summary>The file's stored results.</summary>
+/// <param name="Solved">Whether every non-feed material stream in the file is marked calculated.</param>
+/// <param name="Streams">Tag → { T_K, P_Pa, massFlow_kg_s, molarFlow_mol_s, x: { compound: mole fraction } }.</param>
+/// <param name="Energy">Tag → { kW }.</param>
+public sealed record StoredResults(bool Solved, Dictionary<string, JsonElement> Streams,
+    Dictionary<string, JsonElement> Energy);
+
+/// <summary>A block the runner cannot express.</summary>
+/// <param name="Tag">The block's tag in the file.</param>
+/// <param name="DwsimType">The engine's ObjectType name, e.g. CapeOpenUO.</param>
+/// <param name="Reason">CAPE_OPEN, NOT_IN_CATALOG, LOGICAL_BLOCK or SCRIPT_BLOCK.</param>
+/// <param name="Ports">Every attached stream, with direction "in" or "out".</param>
+/// <param name="Parameters">Readable scalar properties, raw (strings or numbers, engine units).</param>
+/// <param name="Detail">Why, when the reason alone does not say (e.g. a column configuration the catalog cannot state).</param>
+public sealed record PlaceholderResponse(string Tag, string DwsimType, string Reason,
+    List<PlaceholderPort> Ports, Dictionary<string, JsonElement> Parameters,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Detail = null);
+
+/// <summary>One stream attached to a placeholder.</summary>
+/// <param name="Stream">The stream's tag.</param>
+/// <param name="Direction">"in" or "out".</param>
+public sealed record PlaceholderPort(string Stream, string Direction);
+
+/// <summary>A graphic object that is not a process object.</summary>
+/// <param name="Tag">Its tag (or name, when it has no tag).</param>
+/// <param name="DwsimType">The engine's ObjectType name, e.g. GO_MasterTable.</param>
+/// <param name="Reason">NOT_A_PROCESS_OBJECT.</param>
+public sealed record IgnoredResponse(string Tag, string DwsimType, string Reason);
+
+/// <summary>A property package as the file holds it.</summary>
+/// <param name="Name">The engine's component name, e.g. "Peng-Robinson (PR)".</param>
+/// <param name="Id">The wire id build-solve accepts, e.g. "PR".</param>
+/// <param name="Supported">Whether build-solve could run it.</param>
+public sealed record PropertyPackageRead(string Name, string Id, bool Supported);
