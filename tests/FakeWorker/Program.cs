@@ -33,6 +33,8 @@ var markerDir = job.Template is { Length: > 0 } t
         : Path.GetDirectoryName(Path.GetFullPath(args[0]))!;
 var runId = Guid.NewGuid().ToString("N");
 File.WriteAllText(Path.Combine(markerDir, $"run-{runId}.start"), DateTime.UtcNow.Ticks.ToString());
+// ISK-541 — so a test can ask the OS whether this process is still alive after its caller left.
+File.WriteAllText(Path.Combine(markerDir, $"run-{runId}.pid"), Environment.ProcessId.ToString());
 int Done(int code)
 {
     File.WriteAllText(Path.Combine(markerDir, $"run-{runId}.end"), DateTime.UtcNow.Ticks.ToString());
