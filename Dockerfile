@@ -49,6 +49,10 @@ RUN useradd --system --uid 10001 --create-home --home-dir /home/runner runner \
 ENV TMPDIR=/tmp/dwsim
 
 COPY --from=build /opt/dwsim /opt/dwsim
+# DWSIM.Logging.Logger creates this directory in its type initializer. Unwritable, the logger throws
+# and every loader failure surfaces as the logger's UnauthorizedAccessException instead of its own
+# cause (iskra 285: all 14 FOSSEE load failures read that way as the runner user).
+RUN mkdir -p "/opt/dwsim/DWSIM Application Data" && chown runner:runner "/opt/dwsim/DWSIM Application Data"
 COPY --from=build /out/api    /app/api
 COPY --from=build /out/worker /app/worker
 COPY templates/ /templates/

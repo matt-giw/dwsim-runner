@@ -151,4 +151,25 @@ public class ReadTests
 
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, resp.StatusCode);
     }
+
+    // A loader failure is logged by DWSIM.Logging.Logger, whose type initializer creates
+    // "<DWSIM_PATH>/DWSIM Application Data". As the non-root runner user that threw, and the 422 then
+    // named the LOGGER for every file that failed to load — the real cause (a missing property-package
+    // library, measured on 14 FOSSEE files) never reached the caller.
+    [SkippableFact]
+    public async Task A_load_failure_names_the_engine_cause_not_the_logger()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+        using var buffer = new MemoryStream();
+        using (var zip = new System.IO.Compression.ZipArchive(buffer, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+        using (var w = new StreamWriter(zip.CreateEntry("x.xml").Open()))
+            w.Write("<?xml version=\"1.0\"?><DWSIM_Simulation_Data><GeneralInfo><Bad>");
+
+        var resp = await Read(buffer.ToArray());
+        var body = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
+        Assert.Equal("LOAD_FAILED", body.GetProperty("error").GetString());
+        Assert.DoesNotContain("DWSIM.Logging.Logger", body.GetProperty("message").GetString());
+    }
 }
