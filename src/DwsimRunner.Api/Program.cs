@@ -1431,9 +1431,23 @@ async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, Canc
                 {
                     await proc.WaitForExitAsync(cts.Token);
                 }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                catch (OperationCanceledException)
                 {
-                    proc.Kill(entireProcessTree: true);   // the hard timeout — solver hung or diverged
+                    // Two causes, one consequence: nobody is waiting for this process any more.
+                    // The hard timeout (solver hung or diverged), or — ISK-541 — the caller went
+                    // away. This catch used to carry `when (!ct.IsCancellationRequested)`, so a
+                    // caller's hang-up skipped the kill: the worker ran on (forever, once its
+                    // result outgrew the stdout pipe nobody was draining) while `finally` below
+                    // handed its slot to the next request. Measured 2026-10-04.
+                    //
+                    // Kill AND reap before leaving this block, so the slot is released only once
+                    // the process is gone: MAX_CONCURRENT_SOLVES counts processes, not requests.
+                    await KillAndReapAsync(proc);
+                    if (ct.IsCancellationRequested)
+                    {
+                        app.Logger.LogInformation("worker spawn: outcome={Outcome} pid={Pid}", "CANCELLED", proc.Id);
+                        throw;
+                    }
                     return new WorkerRun(null, "", "hard timeout");
                 }
                 return new WorkerRun(proc.ExitCode, await stdoutTask, await stderrTask);
@@ -1448,6 +1462,18 @@ async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, Canc
     {
         try { File.Delete(jobFile); } catch { /* best effort */ }
     }
+}
+
+// Kill the worker's process tree and wait until it is gone. The wait is bounded: a process that
+// survives SIGKILL for five seconds is not something this API can fix, and holding its slot
+// forever would turn one stuck process into a dead pool.
+static async Task KillAndReapAsync(Process proc)
+{
+    try { proc.Kill(entireProcessTree: true); }
+    catch (InvalidOperationException) { /* it exited between the wait and the kill */ }
+    using var reap = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    try { await proc.WaitForExitAsync(reap.Token); }
+    catch (OperationCanceledException) { /* see above */ }
 }
 
 // The ONE ProcessStartInfo for the worker.
