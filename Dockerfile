@@ -48,11 +48,12 @@ RUN useradd --system --uid 10001 --create-home --home-dir /home/runner runner \
     && chown -R runner:runner /tmp/dwsim
 ENV TMPDIR=/tmp/dwsim
 
+# The engine install stays root-owned and read-only to `runner`: nothing under /opt is writable by a
+# worker. (iskra 285 once made "/opt/dwsim/DWSIM Application Data" runner-writable so the engine's
+# logger could start; the read worker now points the logger into its own job directory instead —
+# DWSIM.Logging.Logger uses $HOME/Documents/DWSIM Application Data when $HOME/Documents exists, and
+# ReadSandbox sets HOME to the job directory. See docs/api.md, "The read worker's sandbox".)
 COPY --from=build /opt/dwsim /opt/dwsim
-# DWSIM.Logging.Logger creates this directory in its type initializer. Unwritable, the logger throws
-# and every loader failure surfaces as the logger's UnauthorizedAccessException instead of its own
-# cause (iskra 285: all 14 FOSSEE load failures read that way as the runner user).
-RUN mkdir -p "/opt/dwsim/DWSIM Application Data" && chown runner:runner "/opt/dwsim/DWSIM Application Data"
 COPY --from=build /out/api    /app/api
 COPY --from=build /out/worker /app/worker
 COPY templates/ /templates/

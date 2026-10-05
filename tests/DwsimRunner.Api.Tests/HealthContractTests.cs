@@ -117,6 +117,48 @@ public class HealthContractTests
         Assert.False(string.IsNullOrEmpty(probe.GetProperty("checkedAt").GetString()));
     }
 
+    // iskra 285 — /health says whether THIS host can sandbox the read worker, so it can be checked
+    // after a deploy (the production kernel is not the test host's). Same two-part contract.
+    private static async Task<JsonElement> SettledReadSandbox(RunnerHost host)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            var s = (await host.Client.GetFromJsonAsync<JsonElement>("/health")).GetProperty("readSandbox");
+            if (s.GetProperty("state").GetString() != "pending") return s;
+            await Task.Delay(50);
+        }
+        throw new TimeoutException("read sandbox probe never left 'pending'");
+    }
+
+    [Fact]
+    public async Task Health_reports_the_read_sandbox_enforced_when_the_worker_applies_it()
+    {
+        using var host = new RunnerHost(new() { ["DWSIM_PATH"] = MakeFixtureDwsimDir() });
+
+        var s = await SettledReadSandbox(host);
+
+        Assert.Equal("ok", s.GetProperty("state").GetString());
+        Assert.True(s.GetProperty("enforced").GetBoolean());
+        Assert.True(s.GetProperty("seccomp").GetBoolean());
+        Assert.Equal(6, s.GetProperty("landlockAbi").GetInt32());
+    }
+
+    [Fact]
+    public async Task Health_reports_the_read_sandbox_not_enforced_and_why_when_the_host_lacks_it()
+    {
+        var dwsim = MakeFixtureDwsimDir();
+        File.WriteAllText(Path.Combine(dwsim, "__no-sandbox"), "");
+        using var host = new RunnerHost(new() { ["DWSIM_PATH"] = dwsim });
+
+        var s = await SettledReadSandbox(host);
+
+        Assert.Equal("failed", s.GetProperty("state").GetString());
+        Assert.False(s.GetProperty("enforced").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, s.GetProperty("landlockAbi").ValueKind);
+        Assert.Contains("Landlock", s.GetProperty("error").GetString());
+    }
+
     // The failure this exists for: the engine half is unrunnable while the file half looks fine.
     // `dwsimFound` stays true and `ok` stays true — only the probe knows.
     [Fact]

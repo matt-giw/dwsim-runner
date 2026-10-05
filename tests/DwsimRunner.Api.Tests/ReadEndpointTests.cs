@@ -28,9 +28,10 @@ public class ReadEndpointTests
 
     private static string ReadDir() => Directory.CreateTempSubdirectory("dwsim-read-tests-").FullName;
 
-    /// <summary>Upload files the route wrote and has not yet deleted (the FakeWorker's run markers excluded).</summary>
+    /// <summary>Files the route wrote and has not yet deleted, in the per-job directories too (the
+    /// FakeWorker's run markers, which it drops in the read directory itself, excluded).</summary>
     private static string[] Uploads(string dir) =>
-        Directory.GetFiles(dir).Where(f => !Path.GetFileName(f).StartsWith("run-")).ToArray();
+        Directory.GetFiles(dir, "*", SearchOption.AllDirectories).Where(f => !Path.GetFileName(f).StartsWith("run-")).ToArray();
 
     private static string[] StartMarkers(string dir) => Directory.GetFiles(dir, "run-*.start");
 
@@ -286,7 +287,7 @@ public class ReadEndpointTests
         Assert.NotNull(pidFile);
         await Task.Delay(100);   // the pid file is written before its content is flushed on slow hosts
         var pid = int.Parse(File.ReadAllText(pidFile!));
-        Assert.Single(Uploads(dir));   // the upload exists while the worker runs
+        Assert.Single(Directory.GetFiles(dir, "upload.dwxml", SearchOption.AllDirectories));   // the upload exists while the worker runs
 
         caller.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
@@ -364,6 +365,47 @@ public class ReadEndpointTests
             Environment.SetEnvironmentVariable("ISK_PROBE_SECRET", null);
             Environment.SetEnvironmentVariable("DATABASE_URL", null);
         }
+    }
+
+    // #31 re-review gap 5 — each upload lives in its OWN directory (0700) with its job file, as a 0600
+    // file, and nothing is written beside other jobs'. The sandboxed worker can open that directory
+    // and no other writable one. Looked at while the worker is still running.
+    [Fact]
+    public async Task The_upload_sits_alone_in_a_0700_per_job_directory_as_a_0600_file()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var dir = ReadDir();
+        using var host = Host(dir);
+
+        var request = Post(host, Utf8(Xml + "<!-- __sleep:2 -->"));
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (Directory.GetDirectories(dir).Length == 0 && DateTime.UtcNow < deadline) await Task.Delay(25);
+
+        var job = Assert.Single(Directory.GetDirectories(dir));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(job));
+        var upload = Path.Combine(job, "upload.dwxml");
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(upload));
+        Assert.Single(Directory.GetFiles(job, "dwsim-job-*.json"));          // the job file is in there too
+        Assert.Empty(Uploads(dir).Where(f => Path.GetDirectoryName(f) == dir)); // nothing beside the job dirs
+
+        Assert.Equal(HttpStatusCode.OK, (await request).StatusCode);
+        Assert.Empty(Uploads(dir));
+        Assert.Empty(Directory.GetDirectories(dir));
+    }
+
+    // Fail closed: a worker that cannot apply its sandbox opens nothing and the route answers a named
+    // 503; the per-job directory still goes.
+    [Fact]
+    public async Task A_host_without_the_read_sandbox_is_503_sandbox_unavailable()
+    {
+        var dir = ReadDir();
+        using var host = Host(dir);
+
+        var resp = await Post(host, Utf8(Xml + "<!-- __sandbox-unavailable -->"));
+
+        await AssertRefused(resp, HttpStatusCode.ServiceUnavailable, "SANDBOX_UNAVAILABLE");
+        Assert.Empty(Uploads(dir));
+        Assert.Empty(Directory.GetDirectories(dir));
     }
 
     /// <summary>Zero the uncompressed-size field in every local (+22) and central (+24) header, so the

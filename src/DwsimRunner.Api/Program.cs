@@ -75,6 +75,13 @@ builder.Services.AddSwaggerGen(o =>
 
 var app = builder.Build();
 
+// iskra 285, #31 re-review gap 1 — the API holds RUNNER_API_KEY, DATABASE_URL and the rest in its
+// environment. Not dumpable means another process of the SAME account (a worker) cannot open this
+// process's /proc entries (environ, mem, maps, fd) or attach to it. The read worker is also
+// sandboxed (ReadSandbox.cs); this is the second layer, and it covers every worker mode. Workers
+// are unaffected: execve resets the flag for the child.
+ProcessHardening.DisableDumping();
+
 // Settings come from IConfiguration (env vars in production; in-memory
 // overrides in tests) — never read Environment directly here.
 string Cfg(string key, string fallback) =>
@@ -90,6 +97,8 @@ string buildRef       = Cfg("BUILD_REF", "unknown");
 string dwsimPath      = Cfg("DWSIM_PATH", "/opt/dwsim");
 string templatesPath  = Path.GetFullPath(Cfg("TEMPLATES_PATH", "/templates"));
 string workerDll      = Cfg("WORKER_PATH", "/app/worker/DwsimRunner.Worker.dll");
+// iskra 285 — where read jobs keep their per-job directories (and the /health sandbox probe its own).
+var readTempPath = Cfg("READ_TEMP_PATH", Path.Combine(Path.GetTempPath(), "dwsim-read"));
 int    defaultTimeout = int.TryParse(app.Configuration["SOLVE_TIMEOUT_SECONDS"], out var t) ? t : 60;
 int    maxConcurrent  = int.TryParse(app.Configuration["MAX_CONCURRENT_SOLVES"], out var c) ? c : 4;
 int    cacheSize      = int.TryParse(app.Configuration["CACHE_SIZE"], out var cs) ? cs : 256;
@@ -359,11 +368,55 @@ void StartFlowsheetProbe()
     static string Truncate(string s) => s.Length > 400 ? s[..400] + "…" : s;
 }
 
+// iskra 285 — can THIS host sandbox the read worker? The same pattern as the flowsheet probe (once,
+// in the background, first /health): a worker in `sandbox-probe` mode goes through exactly the path a
+// read does — apply the sandbox, re-exec, verify — and reports the result. The read route does not
+// consult this: every read worker applies and verifies the sandbox itself and fails closed. This is
+// so that, after a deploy, anyone can see whether the read route will serve on the host.
+ReadSandboxReport readSandbox = ReadSandboxReport.Pending;
+int readSandboxStarted = 0;
+
+void StartReadSandboxProbe()
+{
+    if (Interlocked.Exchange(ref readSandboxStarted, 1) != 0) return;
+    _ = Task.Run(async () =>
+    {
+        var dir = Path.Combine(readTempPath, $"probe-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(dir);
+            var run = await SpawnWorkerAsync(new { mode = "sandbox-probe" }, TimeSpan.FromSeconds(defaultTimeout),
+                CancellationToken.None, gated: false, tmpDir: dir);
+            using var doc = JsonDocument.Parse(run.Stdout);
+            var r = doc.RootElement;
+            readSandbox = new ReadSandboxReport(
+                run.ExitCode == 0 ? "ok" : "failed",
+                r.TryGetProperty("landlockAbi", out var abi) && abi.ValueKind == JsonValueKind.Number ? abi.GetInt32() : null,
+                r.TryGetProperty("seccomp", out var sc) && sc.ValueKind == JsonValueKind.True,
+                run.ExitCode == 0 && r.TryGetProperty("enforced", out var en) && en.ValueKind == JsonValueKind.True,
+                DateTime.UtcNow.ToString("o"),
+                r.TryGetProperty("message", out var m) ? m.GetString() : null);
+        }
+        catch (Exception ex)
+        {
+            readSandbox = new ReadSandboxReport("failed", null, false, false, DateTime.UtcNow.ToString("o"), ex.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+        app.Logger.Log(readSandbox.Enforced ? LogLevel.Information : LogLevel.Error,
+            "read sandbox probe: enforced={Enforced} landlockAbi={Abi} seccomp={Seccomp} error={Error}",
+            readSandbox.Enforced, readSandbox.LandlockAbi, readSandbox.Seccomp, readSandbox.Error);
+    });
+}
+
 // One status call answers: is it up, what engine version, what templates (FR-007).
 app.MapGet("/health", () =>
 {
     var (found, version, supported) = ProbeDwsim();
     StartFlowsheetProbe();
+    StartReadSandboxProbe();
     return Results.Ok(new
     {
         ok = found,
@@ -375,6 +428,8 @@ app.MapGet("/health", () =>
         versionSupported = supported,
         // ISK-104 — did the WORKER build a flowsheet on this image? pending | ok | failed.
         flowsheetProbe,
+        // iskra 285 — will POST /flowsheets/read serve on this host? pending, then enforced true|false.
+        readSandbox,
         templatesPath,
         templates = ListTemplateIds(),
         maxConcurrent,
@@ -1044,7 +1099,6 @@ static IResult PngOrError(HttpContext http, CaseOutcome outcome)
 // worker kill on abort is the shared spawn path's (ISK-541), nothing here.
 const long ReadMaxBytes = 25L * 1024 * 1024;
 const long ReadMaxUnpackedBytes = 200L * 1024 * 1024;
-var readTempPath = Cfg("READ_TEMP_PATH", Path.Combine(Path.GetTempPath(), "dwsim-read"));
 app.MapPost("/flowsheets/read", async (HttpRequest request, int? timeoutSeconds, CancellationToken ct) =>
 {
     IResult TooLarge() => ErrorResult(StatusCodes.Status413PayloadTooLarge, "FILE_TOO_LARGE",
@@ -1075,17 +1129,23 @@ app.MapPost("/flowsheets/read", async (HttpRequest request, int? timeoutSeconds,
     if (refusal is not null) return refusal;
 
     Directory.CreateDirectory(readTempPath);
-    // The upload is the INFLATED xml; the worker sanitises and loads it as .dwxml, so the engine
-    // never sees a zip. A per-job directory is the worker's TMPDIR (engine scratch); both go on
-    // every path — success, refusal, crash, timeout, cancel (the finally runs in all of them).
-    var file = Path.Combine(readTempPath, $"dwsim-read-{Guid.NewGuid():N}.dwxml");
+    // #31 re-review gap 5 — ONE directory per job, created 0700, holds everything the job has: the
+    // upload (the INFLATED xml, 0600; the worker sanitises and loads it as .dwxml, so the engine never
+    // sees a zip), the job file, and the worker's TMPDIR scratch. The sandboxed worker can open this
+    // directory and nothing else that is writable, so it cannot see another job's upload. The whole
+    // directory goes on every path — success, refusal, crash, timeout, cancel (the finally runs in all).
     var jobTmp = Path.Combine(readTempPath, $"job-{Guid.NewGuid():N}");
+    var file = Path.Combine(jobTmp, "upload.dwxml");
     try
     {
-        var dir = Directory.CreateDirectory(jobTmp);
-        try { dir.UnixFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute; }
-        catch (PlatformNotSupportedException) { /* non-POSIX host (tests on macOS/Windows) */ }
-        await File.WriteAllBytesAsync(file, xml!, ct);
+        if (OperatingSystem.IsWindows()) Directory.CreateDirectory(jobTmp);
+        else Directory.CreateDirectory(jobTmp, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        await using (var upload = new FileStream(file, new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew, Access = FileAccess.Write,
+            UnixCreateMode = OperatingSystem.IsWindows() ? null : UnixFileMode.UserRead | UnixFileMode.UserWrite,
+        }))
+            await upload.WriteAsync(xml!, ct);
         app.Logger.LogInformation("read: fileName={FileName} bytes={Bytes} xmlBytes={XmlBytes}",
             request.Headers["X-File-Name"].ToString(), bytes.Length, xml!.Length);
         var timeout = TimeSpan.FromSeconds(timeoutSeconds is { } to ? Math.Clamp(to, 1, MaxTimeoutSeconds) : 120);
@@ -1097,13 +1157,12 @@ app.MapPost("/flowsheets/read", async (HttpRequest request, int? timeoutSeconds,
     }
     finally
     {
-        try { File.Delete(file); } catch { /* best effort; the directory is the runner's own */ }
-        try { Directory.Delete(jobTmp, recursive: true); } catch { /* best effort */ }
+        try { Directory.Delete(jobTmp, recursive: true); } catch { /* best effort; the directory is the runner's own */ }
     }
 })
     .WithTags("Documents")
     .WithSummary("Open a DWSIM file (.dwxmz or .dwxml) and return it as a runner document.")
-    .WithDescription("iskra spec 285. Body: the raw file bytes (application/octet-stream), at most 25 MB; the format is sniffed, never taken from X-File-Name. 413 FILE_TOO_LARGE / UNPACKED_TOO_LARGE (zip entries over 200 MB, checked before extraction), 415 NOT_A_DWSIM_FILE (not a zip or XML, a zip with no .xml entry, or a corrupt zip), 422 PASSWORD_PROTECTED or LOAD_FAILED (the engine's loader threw; message is the full inner-exception chain). Never cached.")
+    .WithDescription("iskra spec 285. Body: the raw file bytes (application/octet-stream), at most 25 MB; the format is sniffed, never taken from X-File-Name. 413 FILE_TOO_LARGE / UNPACKED_TOO_LARGE (zip entries over 200 MB, checked before extraction), 415 NOT_A_DWSIM_FILE (not a zip or XML, a zip with no .xml entry, or a corrupt zip), 422 PASSWORD_PROTECTED or LOAD_FAILED (the engine's loader threw; message is the full inner-exception chain), 503 SANDBOX_UNAVAILABLE (this host cannot apply the read worker's sandbox, so the file is not opened; /health readSandbox says whether it can). Never cached.")
     .Accepts<byte[]>("application/octet-stream")
     .Produces<ReadResponse>(StatusCodes.Status200OK)
     .Produces<ErrorResponse>(StatusCodes.Status413PayloadTooLarge)
@@ -1111,6 +1170,7 @@ app.MapPost("/flowsheets/read", async (HttpRequest request, int? timeoutSeconds,
     .Produces<ErrorResponse>(StatusCodes.Status422UnprocessableEntity)
     .Produces<ErrorResponse>(StatusCodes.Status429TooManyRequests)
     .Produces<ErrorResponse>(StatusCodes.Status500InternalServerError)
+    .Produces<ErrorResponse>(StatusCodes.Status503ServiceUnavailable)
     .Produces<ErrorResponse>(StatusCodes.Status504GatewayTimeout);
 
 // The read route's format decision and the engine-free inflation. Zip magic → find the one .xml
@@ -1594,8 +1654,9 @@ const int WorkerStartFailed = 127;
 
 async Task<WorkerRun> SpawnWorkerAsync(object jobPayload, TimeSpan timeout, CancellationToken ct, bool gated, string? tmpDir = null)
 {
-    // Job handed to the worker via a temp file (keeps argv clean, avoids stdin plumbing).
-    var jobFile = Path.Combine(Path.GetTempPath(), $"dwsim-job-{Guid.NewGuid():N}.json");
+    // Job handed to the worker via a temp file (keeps argv clean, avoids stdin plumbing). A job with
+    // its own directory keeps the job file in it: the sandboxed read worker can open nothing else.
+    var jobFile = Path.Combine(tmpDir ?? Path.GetTempPath(), $"dwsim-job-{Guid.NewGuid():N}.json");
     try
     {
         await File.WriteAllTextAsync(jobFile,
@@ -1762,6 +1823,12 @@ static bool WorkerEnvAllowed(string key) =>
             return (new(StatusCodes.Status504GatewayTimeout,
                 WorkerErrorOrDefault(run.Stdout, "SOLVE_TIMEOUT", "worker exceeded its own deadline")), "SOLVE_TIMEOUT");
 
+        case 7:   // iskra 285 — read mode only: the worker could not apply its sandbox, so it did not
+                  // open the file. A property of this HOST (kernel, container runtime), not of the
+                  // request: 503, and /health's readSandbox says the same before anyone uploads.
+            return (new(StatusCodes.Status503ServiceUnavailable,
+                WorkerErrorOrDefault(run.Stdout, "SANDBOX_UNAVAILABLE", "the read sandbox is not available on this host")), "SANDBOX_UNAVAILABLE");
+
         default:  // crash (or WorkerStartFailed) — detail stays in server logs only
             app.Logger.LogError("{Prefix} worker crashed (exit {Code}) for {Subject}: {Stderr}",
                 logPrefix, run.ExitCode, subject, run.Stderr);
@@ -1816,3 +1883,19 @@ public partial class Program
     // Shared camelCase serializer options for the new routes' inline payloads.
     public static readonly JsonSerializerOptions JsonOpts = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 } // WebApplicationFactory hook for tests
+
+// iskra 285, #31 re-review gap 1 — see the call at startup.
+static class ProcessHardening
+{
+    private const int PR_SET_DUMPABLE = 4;
+
+    [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+    private static extern int prctl(int option, nint a2, nint a3, nint a4, nint a5);
+
+    internal static void DisableDumping()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        try { prctl(PR_SET_DUMPABLE, 0, 0, 0, 0); }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) { /* not glibc */ }
+    }
+}

@@ -99,10 +99,14 @@ public sealed record IssueResponse(
 /// Whether the WORKER actually constructed a flowsheet on this image. ok/dwsimFound only say the
 /// DWSIM files are on disk, so they stay true on an image whose engine cannot build.
 /// </param>
+/// <param name="ReadSandbox">
+/// Whether this host can sandbox the read worker (iskra 285). When `enforced` is false,
+/// POST /flowsheets/read answers 503 SANDBOX_UNAVAILABLE and opens nothing.
+/// </param>
 /// <param name="Hint">Install instructions when dwsimFound is false; null otherwise.</param>
 public sealed record HealthResponse(
     bool Ok, string DwsimPath, bool DwsimFound, string? DwsimVersion, string BuildRef,
-    string SupportedRange, bool VersionSupported, ProbeReport FlowsheetProbe,
+    string SupportedRange, bool VersionSupported, ProbeReport FlowsheetProbe, ReadSandboxReport ReadSandbox,
     string TemplatesPath, string?[] Templates,
     int MaxConcurrent, int MaxEvaluations, int MaxTimeoutSeconds, string? Hint);
 
@@ -114,6 +118,18 @@ public sealed record HealthResponse(
 public record ProbeReport(string State, long ElapsedMs, string? CheckedAt, string? Error)
 {
     public static readonly ProbeReport Pending = new("pending", 0, null, null);
+}
+
+/// <summary>The background read-sandbox probe (iskra 285): a worker applies the read sandbox and reports.</summary>
+/// <param name="State">"pending" until the probe answers, then "ok" (sandbox applied and verified) or "failed".</param>
+/// <param name="LandlockAbi">The Landlock ABI the kernel offers; null when it offers none.</param>
+/// <param name="Seccomp">Whether seccomp filtering is available (and, when enforced, in force).</param>
+/// <param name="Enforced">Whether a read worker on this host runs sandboxed. False ⇒ the read route answers 503.</param>
+/// <param name="CheckedAt">When the probe answered, ISO-8601 UTC; null while pending.</param>
+/// <param name="Error">Why the sandbox could not be applied, when it could not.</param>
+public record ReadSandboxReport(string State, int? LandlockAbi, bool Seccomp, bool Enforced, string? CheckedAt, string? Error)
+{
+    public static readonly ReadSandboxReport Pending = new("pending", null, false, false, null, null);
 }
 
 /// <summary>One template, curated or user-saved.</summary>
