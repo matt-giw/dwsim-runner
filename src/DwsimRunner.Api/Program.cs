@@ -80,7 +80,9 @@ var app = builder.Build();
 // process's /proc entries (environ, mem, maps, fd) or attach to it. The read worker is also
 // sandboxed (ReadSandbox.cs); this is the second layer, and it covers every worker mode. Workers
 // are unaffected: execve resets the flag for the child.
-ProcessHardening.DisableDumping();
+var apiNotDumpable = ProcessHardening.DisableDumping(out var dumpableError);
+if (!apiNotDumpable)
+    app.Logger.LogError("PR_SET_DUMPABLE 0 failed ({Error}): other processes of this account can open this process's /proc entries", dumpableError);
 
 // Settings come from IConfiguration (env vars in production; in-memory
 // overrides in tests) — never read Environment directly here.
@@ -394,12 +396,13 @@ void StartReadSandboxProbe()
                 r.TryGetProperty("landlockAbi", out var abi) && abi.ValueKind == JsonValueKind.Number ? abi.GetInt32() : null,
                 r.TryGetProperty("seccomp", out var sc) && sc.ValueKind == JsonValueKind.True,
                 run.ExitCode == 0 && r.TryGetProperty("enforced", out var en) && en.ValueKind == JsonValueKind.True,
+                run.ExitCode == 0 && r.TryGetProperty("signalScoped", out var ss) && ss.ValueKind == JsonValueKind.True,
                 DateTime.UtcNow.ToString("o"),
                 r.TryGetProperty("message", out var m) ? m.GetString() : null);
         }
         catch (Exception ex)
         {
-            readSandbox = new ReadSandboxReport("failed", null, false, false, DateTime.UtcNow.ToString("o"), ex.Message);
+            readSandbox = new ReadSandboxReport("failed", null, false, false, false, DateTime.UtcNow.ToString("o"), ex.Message);
         }
         finally
         {
@@ -430,6 +433,8 @@ app.MapGet("/health", () =>
         flowsheetProbe,
         // iskra 285 — will POST /flowsheets/read serve on this host? pending, then enforced true|false.
         readSandbox,
+        // iskra 285 — did the API make itself not dumpable (its /proc entries closed to same-account processes)?
+        apiNotDumpable,
         templatesPath,
         templates = ListTemplateIds(),
         maxConcurrent,
@@ -1892,10 +1897,17 @@ static class ProcessHardening
     [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
     private static extern int prctl(int option, nint a2, nint a3, nint a4, nint a5);
 
-    internal static void DisableDumping()
+    /// <summary>True when the process is now not dumpable; otherwise false with the reason.</summary>
+    internal static bool DisableDumping(out string? error)
     {
-        if (!OperatingSystem.IsLinux()) return;
-        try { prctl(PR_SET_DUMPABLE, 0, 0, 0, 0); }
-        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) { /* not glibc */ }
+        error = null;
+        if (!OperatingSystem.IsLinux()) { error = "not Linux"; return false; }
+        try
+        {
+            if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) == 0) return true;
+            error = $"errno {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}";
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) { error = ex.Message; }
+        return false;
     }
 }

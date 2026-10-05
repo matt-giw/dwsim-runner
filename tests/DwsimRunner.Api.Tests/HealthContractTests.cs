@@ -142,6 +142,16 @@ public class HealthContractTests
         Assert.True(s.GetProperty("enforced").GetBoolean());
         Assert.True(s.GetProperty("seccomp").GetBoolean());
         Assert.Equal(6, s.GetProperty("landlockAbi").GetInt32());
+        Assert.True(s.GetProperty("signalScoped").GetBoolean());
+    }
+
+    // iskra 285 — the API's own not-dumpable flag is reported, not assumed (#31 third review).
+    [Fact]
+    public async Task Health_reports_whether_the_api_made_itself_not_dumpable()
+    {
+        using var host = new RunnerHost(new() { ["DWSIM_PATH"] = MakeFixtureDwsimDir() });
+        var h = await host.Client.GetFromJsonAsync<JsonElement>("/health");
+        Assert.Equal(OperatingSystem.IsLinux(), h.GetProperty("apiNotDumpable").GetBoolean());
     }
 
     [Fact]

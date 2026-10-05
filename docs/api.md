@@ -286,9 +286,11 @@ curl -s localhost:8080/health | jq .
     "landlockAbi": 6,              // the kernel's Landlock ABI; null = none (the read route then answers 503)
     "seccomp": true,
     "enforced": true,              // false ⇒ POST /flowsheets/read answers 503 SANDBOX_UNAVAILABLE
+    "signalScoped": true,          // Landlock signal scoping also applied (kernel ABI ≥ 6; not required)
     "checkedAt": "2026-10-05T00:18:40Z",
     "error": null                  // why it could not be applied, when it could not
   },
+  "apiNotDumpable": true,          // the API made itself not dumpable at startup (false is also logged)
   "templatesPath": "/templates",
   "templates": ["methanol_synthesis"],   // bare curated ids, ordinal-sorted
   "maxConcurrent": 6,
@@ -518,14 +520,21 @@ runs and before the upload is opened:
 
 1. `prctl(PR_SET_NO_NEW_PRIVS)`.
 2. A **Landlock** ruleset that handles every filesystem right the kernel knows and grants only the
-   paths in the table below.
+   paths in the table below. **Landlock ABI 3 or later is required** (ABI 3 adds the truncate
+   right; below it, truncating a same-account file outside the grants would not be refused), so
+   `enforced: true` means the same thing on every kernel. When the kernel offers ABI 6 or later the
+   ruleset also scopes **signals**: the worker cannot signal any process outside its sandbox. That
+   is applied when offered and not required (`readSandbox.signalScoped` says which).
 3. A **seccomp** filter that refuses `socket()` for every address family (and `io_uring_setup`).
 
 Landlock and seccomp apply to the calling thread, and the .NET runtime already has other threads by
 the time `Main` runs, so the worker applies both on its main thread and then **re-execs itself**:
 the new image starts single-threaded inside the sandbox and every thread it creates inherits it.
 The re-exec'd worker checks that the sandbox is in force (no_new_privs set, a seccomp filter
-installed, `/` not readable, a socket refused) before it reads its job.
+installed, `/` not readable, a socket refused, ABI 3 or later) before it reads its job, and the
+reader checks it **again** as its first statement — so no route into the reader exists without an
+enforced sandbox, whatever the job's spelling or the dispatch did. The gate reads the job with the
+same parser as the dispatcher (case-insensitive property names, lower-cased mode).
 
 What the read worker can and cannot access:
 
@@ -556,17 +565,25 @@ The API side: each upload is written as `upload.dwxml` (mode 0600) inside its ow
 (mode 0700) under `READ_TEMP_PATH`, together with the job file; the whole directory is deleted on
 every path (success, refusal, crash, timeout, caller abort). The API process marks itself
 **not dumpable** (`PR_SET_DUMPABLE 0`) at startup, so no other process of the same account — any
-worker, in any mode — can open its `/proc` entries or attach to it.
+worker, in any mode — can open its `/proc` entries or attach to it; `/health` reports it as
+`apiNotDumpable` and a failure is logged. The image sets `DOTNET_EnableDiagnostics=0`, so the API
+opens no .NET diagnostics socket or debugger pipes that a same-account process could connect to.
 
-**Fail closed.** If any step is unavailable — a kernel without Landlock, a container runtime that
+**Fail closed.** If any step is unavailable — a kernel without Landlock or below ABI 3, a container runtime that
 does not implement it, a CPU architecture without a filter — the worker writes
 `SANDBOX_UNAVAILABLE` and exits 7, the route answers **503**, and the upload is never opened. There
 is no setting that runs `read` without the sandbox. Other modes (solve, build-solve, flash, export,
 pfd, …) are not sandboxed and are unchanged.
 
-**Check it after every deploy:** `curl -s <runner>/health | jq .readSandbox` (call twice; the first
-answer is `pending`). `enforced: false` means the read route answers 503 on that host. Landlock
-availability depends on the host kernel and the container runtime, not on this image.
+**Check it after every deploy, in two steps:**
+
+1. `curl -s <runner>/health | jq '.readSandbox, .apiNotDumpable'` (call twice; the first answer is
+   `pending`). `enforced: false` means the read route answers 503 on that host. Landlock
+   availability depends on the host kernel and the container runtime, not on this image.
+2. One real read of a known file, e.g. the curated template:
+   `curl -s -H "X-Api-Key: $KEY" "<runner>/templates/methanol_synthesis/file" -o m.dwxmz && curl -s -H "X-Api-Key: $KEY" --data-binary @m.dwxmz -H "Content-Type: application/octet-stream" <runner>/flowsheets/read | jq '.document.objects | length'`
+   — a number, not an error. `enforced: true` proves the sandbox applies; it does not prove the
+   engine can load a file inside it on that kernel. Step 2 does.
 
 #### What remains
 
@@ -582,8 +599,15 @@ availability depends on the host kernel and the container runtime, not on this i
   what keep the worker out of the API's process; a second account was not needed for that.
 - Landlock controls opening files, not looking them up: the read worker can still learn whether a
   path exists (`stat`), but cannot open, list or write it.
-- The read worker can still send signals to processes of the same account (Landlock's signal
-  scoping needs ABI 6 and is not used, so behaviour does not differ between kernels).
+- On kernels offering Landlock ABI 3–5 the read worker can still send signals to processes of the
+  same account (signal scoping needs ABI 6; `readSandbox.signalScoped` says whether it is applied).
+  An availability matter only.
+- Landlock does not restrict `chmod`, `chown`, `utime` or extended attributes. The read worker can
+  therefore change the mode or timestamps of same-account files it cannot open (for example make a
+  saved template unreadable with mode 000). That affects availability, not confidentiality.
+- The only real-engine read under the sandbox on x86-64 before a deploy is CI's
+  `A_real_engine_read_succeeds_under_the_sandbox` (GitHub's kernel, not Railway's); hence step 2
+  of the post-deploy check.
 - Resource use (CPU, memory, disk in the job directory) is bounded only by the existing timeouts,
   the 200 MB inflate cap and the container's own limits.
 - On-prem (`Dockerfile.onprem`) is unchanged by this; the same worker code applies there, so the

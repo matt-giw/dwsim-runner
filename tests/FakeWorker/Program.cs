@@ -245,7 +245,7 @@ switch (job.Mode?.ToLowerInvariant())
             Console.WriteLine("""{"error":"SANDBOX_UNAVAILABLE","message":"the read sandbox could not be applied on this host, so the file was not opened: Landlock is not available","landlockAbi":null,"seccomp":true,"enforced":false}""");
             return Done(7);
         }
-        Console.WriteLine("""{"landlockAbi":6,"seccomp":true,"enforced":true,"results":[]}""");
+        Console.WriteLine("""{"landlockAbi":6,"seccomp":true,"enforced":true,"signalScoped":true,"results":[]}""");
         break;
 
     case "read":

@@ -58,6 +58,10 @@ COPY --from=build /out/api    /app/api
 COPY --from=build /out/worker /app/worker
 COPY templates/ /templates/
 
+# iskra 285 — no .NET diagnostics IPC socket or debugger pipes in /tmp/dwsim for the API (or for
+# workers, which inherit DOTNET_* through the allow-list): nothing a same-account process could
+# connect to to inspect the API, whatever its not-dumpable flag says.
+ENV DOTNET_EnableDiagnostics=0
 ENV DWSIM_PATH=/opt/dwsim \
     TEMPLATES_PATH=/templates \
     WORKER_PATH=/app/worker/DwsimRunner.Worker.dll \
