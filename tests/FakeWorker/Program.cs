@@ -17,6 +17,10 @@
 //                       "__save-fail" (the engine's save threw and was swallowed).
 // mode == "flash"       returns a canned flash result; compound "__bad" → exit 2.
 // mode == "pfd"         returns { "pngBase64": <1x1 PNG> }; tag "__render-fail" → exit 5.
+// mode == "read"        echoes what it was given; "__load-fail" in the bytes → exit 3,
+//                       "__sandbox-unavailable" → exit 7 SANDBOX_UNAVAILABLE (iskra 285).
+// mode == "sandbox-probe" reports the sandbox enforced, unless $DWSIM_PATH holds a file
+//                       "__no-sandbox" → exit 7 SANDBOX_UNAVAILABLE (iskra 285).
 // Every invocation drops run-{guid}.start/.end marker files (UTC ticks) into
 // the job template's directory — or $DWSIM_PATH when the job has no template —
 // so tests can count spawns and prove runs don't overlap.
@@ -27,8 +31,10 @@ var job = JsonSerializer.Deserialize<FakeJob>(
     File.ReadAllText(args[0]),
     new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
 
+// iskra 285 — a read job's template sits in its own per-job directory, which the API deletes; its
+// markers go one level up (the read directory), so tests can still count spawns afterwards.
 var markerDir = job.Template is { Length: > 0 } t
-    ? Path.GetDirectoryName(Path.GetFullPath(t))!
+    ? Path.GetDirectoryName(Path.GetFullPath(job.Mode == "read" ? Path.GetDirectoryName(t)! : t))!
     : Environment.GetEnvironmentVariable("DWSIM_PATH") is { Length: > 0 } dp && Directory.Exists(dp)
         ? dp
         : Path.GetDirectoryName(Path.GetFullPath(args[0]))!;
@@ -232,6 +238,47 @@ switch (job.Mode?.ToLowerInvariant())
         // Smallest valid PNG (1×1 transparent pixel).
         Console.WriteLine("""{"pngBase64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}""");
         break;
+
+    case "sandbox-probe":
+        if (File.Exists(Path.Combine(Environment.GetEnvironmentVariable("DWSIM_PATH") ?? "", "__no-sandbox")))
+        {
+            Console.WriteLine("""{"error":"SANDBOX_UNAVAILABLE","message":"the read sandbox could not be applied on this host, so the file was not opened: Landlock is not available","landlockAbi":null,"seccomp":true,"enforced":false}""");
+            return Done(7);
+        }
+        Console.WriteLine("""{"landlockAbi":6,"seccomp":true,"enforced":true,"results":[]}""");
+        break;
+
+    case "read":
+    {
+        // iskra 285 — the file the route wrote is `template`. Echo its extension and size under
+        // "fake" so tests see what the sniffer decided; "__load-fail" in the bytes → exit 3 with a
+        // LOAD_FAILED chain, "__sleep:N" → sleep first.
+        var path = job.Template!;
+        var text = File.ReadAllText(path);
+        var sleep = System.Text.RegularExpressions.Regex.Match(text, @"__sleep:(\d+)");
+        if (sleep.Success) Thread.Sleep(TimeSpan.FromSeconds(int.Parse(sleep.Groups[1].Value)));
+        if (text.Contains("__sandbox-unavailable"))
+        {
+            Console.WriteLine("""{"error":"SANDBOX_UNAVAILABLE","message":"the read sandbox could not be applied on this host, so the file was not opened: fake","landlockAbi":null,"seccomp":true,"enforced":false}""");
+            return Done(7);
+        }
+        if (text.Contains("__load-fail"))
+        {
+            Console.WriteLine("""{"error":"LOAD_FAILED","message":"System.TypeInitializationException: The type initializer for 'DWSIM.Logging.Logger' threw an exception.\n  System.IO.FileNotFoundException: Could not load file or assembly 'Fake'."}""");
+            return Done(3);
+        }
+        Console.WriteLine($$$"""
+        {"savedBy":"DWSIM 6.4.1","engineVersion":"9.0.5.0",
+         "document":{"schemaVersion":1,"name":"fake","compounds":["Water"],"propertyPackage":"STEAM","objects":[],"connections":[]},
+         "layout":{},"stored":{"solved":false,"streams":{},"energy":{}},
+         "placeholders":[],"ignored":[],
+         "propertyPackages":[{"name":"Steam Tables (IAPWS-IF97)","id":"STEAM","supported":true}],"warnings":[],
+         "fake":{"extension":"{{{Path.GetExtension(path)}}}","bytes":{{{new FileInfo(path).Length}}},
+                 "env":{{{JsonSerializer.Serialize(Environment.GetEnvironmentVariables().Keys.Cast<string>().Order().ToArray())}}},
+                 "tmp":{{{JsonSerializer.Serialize(Path.GetTempPath())}}}}}
+        """.ReplaceLineEndings(""));
+        break;
+    }
 
     default:
         // Scripted objective for /optimize tests: a smooth parabola with its

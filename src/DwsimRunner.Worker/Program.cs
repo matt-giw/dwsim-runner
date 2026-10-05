@@ -8,6 +8,7 @@
 //   4 = build failed / unknown compound (issues attached)
 //   5 = render failed (pfd)
 //   6 = the worker's own wall-clock deadline fired (Watchdog.cs)
+//   7 = read mode only: the sandbox could not be applied, so nothing ran (ReadSandbox.cs)
 //   1 = unexpected crash (full detail on stderr only)
 // The API maps exit codes → HTTP. It ALSO applies a timeout of its own, but this process no
 // longer depends on that: FND-0103/FND-0104 were filed against the sentence that used to stand
@@ -17,6 +18,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DwsimRunner.Worker;
+
+// iskra 285 — the read worker's sandbox, FIRST: `read` applies it and re-execs itself (so it must come
+// before ProtocolChannel moves fd 1, and before any engine code or the upload). Every other mode
+// passes straight through. Exit 7 = SANDBOX_UNAVAILABLE: the sandbox could not be applied, nothing ran.
+if (ReadSandbox.EnterIfRequired(args[0]) is int sandboxExit) return sandboxExit;
 
 // MUST run before any native library can print to fd 1. Console.SetOut below
 // only moves the MANAGED writer; Ipopt writes its banner to the descriptor and
@@ -53,6 +59,8 @@ try
         "build-solve"  => Modes.BuildSolve(job),
         "flash"        => Modes.Flash(job),
         "pfd"          => Modes.Pfd(job),
+        "read"         => Reader.Read(job),   // iskra 285 — a DWSIM file → runner document
+        "sandbox-probe" => ReadSandbox.Probe(args[0]),   // iskra 285 — /health and the conformance tests
         _              => Solver.Run(job),   // "solve" (default for spec-001 back-compat)
     };
 }
@@ -61,10 +69,15 @@ catch (WorkerInputException ex)
     exitCode = 2;
     payload = new ErrorDoc(ex.Code, ex.Message, ex.Detail);
 }
+catch (SandboxUnavailableException ex)
+{
+    exitCode = ReadSandbox.ExitUnavailable;
+    payload = new ErrorDoc("SANDBOX_UNAVAILABLE", ex.Message, null);
+}
 catch (TemplateLoadException ex)
 {
     exitCode = 3;
-    payload = new ErrorDoc("TEMPLATE_LOAD_FAILED", ex.Message, null);
+    payload = new ErrorDoc(ex.Code, ex.Message, null);
 }
 catch (BuildAbortException ex)
 {
@@ -169,7 +182,12 @@ class WorkerInputException(string code, string message, string? detail = null) :
     public string? Detail { get; } = detail;
 }
 
-class TemplateLoadException(string message) : Exception(message);
+// `code` is the error the API passes through: TEMPLATE_LOAD_FAILED for a stored template, and
+// iskra 285's LOAD_FAILED for an uploaded file, whose message is the full exception chain.
+class TemplateLoadException(string message, string code = "TEMPLATE_LOAD_FAILED") : Exception(message)
+{
+    public string Code { get; } = code;
+}
 class RenderFailedException(string message) : Exception(message);
 
 static class Solver

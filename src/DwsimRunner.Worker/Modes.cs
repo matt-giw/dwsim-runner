@@ -183,7 +183,7 @@ static class Modes
     private static string Key(string name) =>
         new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 
-    private static string ExtractVersion(Automation3 auto)
+    internal static string ExtractVersion(Automation3 auto)
     {
         try
         {

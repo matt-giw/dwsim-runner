@@ -43,16 +43,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Non-root: the API + spawned worker processes never need root. DWSIM writes
 # temp files to the OS temp dir, so chown that for the runner user.
+# /home/runner/Documents: DWSIM.Logging.Logger writes to $HOME/Documents/DWSIM Application Data when
+# $HOME/Documents exists, else to <cwd>/DWSIM Application Data (unwritable /app/api). Without it, every
+# load failure in solve/inspect/pfd surfaces as the logger's UnauthorizedAccessException instead of its
+# cause. Not an assembly or plugin path of the engine; the read worker uses its job dir instead.
 RUN useradd --system --uid 10001 --create-home --home-dir /home/runner runner \
-    && mkdir -p /tmp/dwsim \
-    && chown -R runner:runner /tmp/dwsim
+    && mkdir -p /tmp/dwsim /home/runner/Documents \
+    && chown -R runner:runner /tmp/dwsim /home/runner/Documents
 ENV TMPDIR=/tmp/dwsim
 
+# The engine install stays root-owned and read-only to `runner`: nothing under /opt is writable by a
+# worker. (iskra 285 once made "/opt/dwsim/DWSIM Application Data" runner-writable so the engine's
+# logger could start; the read worker now points the logger into its own job directory instead —
+# DWSIM.Logging.Logger uses $HOME/Documents/DWSIM Application Data when $HOME/Documents exists, and
+# ReadSandbox sets HOME to the job directory. See docs/api.md, "The read worker's sandbox".)
 COPY --from=build /opt/dwsim /opt/dwsim
 COPY --from=build /out/api    /app/api
 COPY --from=build /out/worker /app/worker
 COPY templates/ /templates/
 
+# iskra 285 — no .NET diagnostics IPC socket or debugger pipes in /tmp/dwsim for the API (or for
+# workers, which inherit DOTNET_* through the allow-list): nothing a same-account process could
+# connect to to inspect the API, whatever its not-dumpable flag says.
+ENV DOTNET_EnableDiagnostics=0
 ENV DWSIM_PATH=/opt/dwsim \
     TEMPLATES_PATH=/templates \
     WORKER_PATH=/app/worker/DwsimRunner.Worker.dll \
