@@ -169,6 +169,7 @@ your request"; a run that completed and diverged is an answer.
 | 422 | `OPTIMIZATION_INFEASIBLE` | no evaluation converged with a readable objective |
 | 429 | `QUEUE_FULL` | admission cap reached; `Retry-After: 5` is set |
 | 500 | `WORKER_CRASH` | worker died unexpectedly, or returned a non-JSON body. Detail stays in server logs |
+| 503 | `SANDBOX_UNAVAILABLE` | `/flowsheets/read` only: this host cannot apply the read worker's sandbox, so the file was **not opened**. A property of the host, not the request — `/health`'s `readSandbox.enforced` says the same before anyone uploads |
 | 503 | `AUTH_NOT_CONFIGURED` | the server has no `RUNNER_API_KEY`. Not a credential problem — the deployment is missing its secret |
 | 503 | `ENGINE_UNAVAILABLE` | the catalog worker failed, returned invalid JSON, or returned a catalog that could not be parsed. Document-validating routes refuse rather than validate against an empty catalog — check `/health` |
 | 504 | `SOLVE_TIMEOUT` | hard timeout. Either the API killed the worker process tree, or the **worker killed itself** on its own `WORKER_DEADLINE_SECONDS` — which watchdog noticed is not the caller's problem |
@@ -280,6 +281,14 @@ curl -s localhost:8080/health | jq .
     "checkedAt": "2026-09-04T21:30:00Z",  // null while pending
     "error": null                  // the cause when "failed"
   },
+  "readSandbox": {                 // can THIS host sandbox the read worker? (iskra 285)
+    "state": "ok",                 // "pending" until the background probe answers, then "ok"|"failed"
+    "landlockAbi": 6,              // the kernel's Landlock ABI; null = none (the read route then answers 503)
+    "seccomp": true,
+    "enforced": true,              // false ⇒ POST /flowsheets/read answers 503 SANDBOX_UNAVAILABLE
+    "checkedAt": "2026-10-05T00:18:40Z",
+    "error": null                  // why it could not be applied, when it could not
+  },
   "templatesPath": "/templates",
   "templates": ["methanol_synthesis"],   // bare curated ids, ordinal-sorted
   "maxConcurrent": 6,
@@ -298,6 +307,12 @@ accept. `buildRef` is the field that answers "which build is this". Unset is an 
 engine cannot actually build. `flowsheetProbe` is the field that answers whether the **worker**
 constructed a flowsheet here; it starts `pending` and is filled in by a background probe on the
 first `/health` call.
+
+`readSandbox` answers whether `POST /flowsheets/read` will serve on this host: a worker goes through
+exactly what a read worker does — apply [the sandbox](#the-read-workers-sandbox), re-exec into it,
+verify it — and reports. Like `flowsheetProbe` it is `pending` on the first call. The read route does
+not consult it (every read worker applies and verifies the sandbox itself); it exists so that after a
+deploy anyone can see, without uploading a file, whether the kernel on that host supports it.
 
 An out-of-range engine still solves; the result gains a best-effort warning in `warnings[]`.
 
@@ -472,6 +487,107 @@ worker mode and the same pool as `build-solve`; the save goes to a private temp 
 
 Never cached (the save must run). A caller that hangs up has its worker killed and reaped by the
 shared spawn path, and the temp file goes with the request.
+
+### `POST /flowsheets/read`
+
+Body: the raw bytes of a DWSIM file (`application/octet-stream`, at most 25 MB) → the file as a
+runner document plus what it could not be (iskra spec 285; contract: iskra-platform
+`specs/285-dwsim-import/contracts/runner-read.md`). The format is sniffed from the bytes, never from
+`X-File-Name` (logged only). `timeoutSeconds` query: default 120, clamped 1..600.
+
+| Status | `error` | When |
+|---|---|---|
+| `200` | — | `document`, `layout`, `stored`, `placeholders`, `ignored`, `propertyPackages`, `warnings`, `removed`, `savedBy`, `engineVersion` |
+| `413` | `FILE_TOO_LARGE` / `UNPACKED_TOO_LARGE` | body over 25 MB / the zip inflates past 200 MB (stopped while inflating) |
+| `415` | `NOT_A_DWSIM_FILE` | neither a zip nor XML, a zip with no `.xml` entry, or a corrupt zip |
+| `422` | `PASSWORD_PROTECTED` / `LOAD_FAILED` | an encrypted entry / the engine's loader threw (message: the cause chain, paths redacted) |
+| `429` | `QUEUE_FULL` | admission cap |
+| `503` | `SANDBOX_UNAVAILABLE` | this host cannot sandbox the read worker; nothing was opened |
+| `504` | `SOLVE_TIMEOUT` | the timeout fired; worker killed |
+
+The API inflates a zip itself, under a hard cap, and hands the worker XML only. The worker rewrites
+that XML to an allow-list (`Sanitizer.cs`: eight top-level sections; simulation objects, property
+packages and graphic objects by **exact** reviewed type name) and only then loads it with the
+engine. Everything removed is listed in `removed[]`. Never cached.
+
+#### The read worker's sandbox
+
+The sanitiser is the primary control on an uploaded file. The read worker **also** runs with the
+least privilege it needs, applied by the worker to itself (`ReadSandbox.cs`) before any engine code
+runs and before the upload is opened:
+
+1. `prctl(PR_SET_NO_NEW_PRIVS)`.
+2. A **Landlock** ruleset that handles every filesystem right the kernel knows and grants only the
+   paths in the table below.
+3. A **seccomp** filter that refuses `socket()` for every address family (and `io_uring_setup`).
+
+Landlock and seccomp apply to the calling thread, and the .NET runtime already has other threads by
+the time `Main` runs, so the worker applies both on its main thread and then **re-execs itself**:
+the new image starts single-threaded inside the sandbox and every thread it creates inherits it.
+The re-exec'd worker checks that the sandbox is in force (no_new_privs set, a seccomp filter
+installed, `/` not readable, a socket refused) before it reads its job.
+
+What the read worker can and cannot access:
+
+| | Access |
+|---|---|
+| the engine install (`DWSIM_PATH`), `/usr` (system libraries and the .NET runtime), the worker's own binaries (`/app/worker`), `/etc/fonts`, `/etc/ld.so.cache`, `/dev/null`, `/dev/urandom` | read-only |
+| its own `/proc/<pid>` (the .NET runtime does not start without it) | read-only |
+| its per-job directory: the upload, the job file, its `TMPDIR` scratch and the engine's log | read-write |
+| any other process's `/proc` entries — including the API's environment | **none** |
+| the template store (`USER_TEMPLATES_PATH`, `TEMPLATES_PATH`) | **none** |
+| other jobs' directories, `/tmp`, `/home`, `/app/api` | **none** |
+| writing anywhere under the engine install, or anywhere outside its job directory | **none** |
+| network: creating a socket of any family (TCP, UDP, unix — so also the API's local .NET diagnostics socket) | **none** |
+
+Directories the engine loads extension assemblies from (decompiled DWSIM 9.0.5:
+`Utility.LoadAdditionalUnitOperations/PropertyPackages`, `Automation3.LoadExtenderDLLs` and the
+loaders' `AssemblyResolve` handlers): `/opt/dwsim`, `/opt/dwsim/unitops`, `/opt/dwsim/ppacks`,
+`/opt/dwsim/extenders`, the parent `/opt` and `/opt/extenders`, and the worker's current directory
+(`/app/api`) and its `extenders`. None is writable by the `runner` account (the image creates no
+runner-owned directory under `/opt` or `/app`), and inside the sandbox none is writable at all.
+
+The engine's logger (`DWSIM.Logging.Logger`) writes to `$HOME/Documents/DWSIM Application Data`
+when `$HOME/Documents` exists, and otherwise to `<current directory>/DWSIM Application Data`. The
+read worker sets `HOME` to its job directory and creates `Documents` in it, so the log lands in the
+job directory and goes with it; nothing under the install needs to be writable.
+
+The API side: each upload is written as `upload.dwxml` (mode 0600) inside its own per-job directory
+(mode 0700) under `READ_TEMP_PATH`, together with the job file; the whole directory is deleted on
+every path (success, refusal, crash, timeout, caller abort). The API process marks itself
+**not dumpable** (`PR_SET_DUMPABLE 0`) at startup, so no other process of the same account — any
+worker, in any mode — can open its `/proc` entries or attach to it.
+
+**Fail closed.** If any step is unavailable — a kernel without Landlock, a container runtime that
+does not implement it, a CPU architecture without a filter — the worker writes
+`SANDBOX_UNAVAILABLE` and exits 7, the route answers **503**, and the upload is never opened. There
+is no setting that runs `read` without the sandbox. Other modes (solve, build-solve, flash, export,
+pfd, …) are not sandboxed and are unchanged.
+
+**Check it after every deploy:** `curl -s <runner>/health | jq .readSandbox` (call twice; the first
+answer is `pending`). `enforced: false` means the read route answers 503 on that host. Landlock
+availability depends on the host kernel and the container runtime, not on this image.
+
+#### What remains
+
+- **Production is unverified.** The sandbox was measured on Docker Desktop's linuxkit 6.12 kernel
+  (Landlock ABI 6) on arm64, and the conformance tests run in CI on GitHub's x86-64 runner. Whether
+  Railway's runtime offers Landlock is not known until `readSandbox` is read on the deployed
+  development runner. If it reports `enforced: false`, the read route is unavailable there (503),
+  not unsandboxed; the options then are an unprivileged user+network namespace for the read worker,
+  or a separate read-only service that holds no secrets and mounts no template store.
+- **amd64 under emulation cannot run it.** Locally, `linux/amd64` images run under Rosetta, which
+  does not implement the Landlock syscalls: the read route answers 503 there, by design.
+- The worker and the API still run as the same account. The sandbox and the not-dumpable API are
+  what keep the worker out of the API's process; a second account was not needed for that.
+- Landlock controls opening files, not looking them up: the read worker can still learn whether a
+  path exists (`stat`), but cannot open, list or write it.
+- The read worker can still send signals to processes of the same account (Landlock's signal
+  scoping needs ABI 6 and is not used, so behaviour does not differ between kernels).
+- Resource use (CPU, memory, disk in the job directory) is bounded only by the existing timeouts,
+  the 200 MB inflate cap and the container's own limits.
+- On-prem (`Dockerfile.onprem`) is unchanged by this; the same worker code applies there, so the
+  same `/health` check applies.
 
 ### `POST /flowsheets/pfd`
 
@@ -707,6 +823,7 @@ observes:
 | `MAX_DOCUMENT_OBJECTS` / `_CONNECTIONS` / `_REACTIONS` / `_BYTES` | `500` / `1000` / `200` / `204800` | construction caps ⇒ `DOCUMENT_TOO_LARGE` |
 | `CACHE_SIZE` | `256` | LRU result-cache entries |
 | `EXPORT_TEMP_PATH` | `$TMPDIR/dwsim-export` | where `/flowsheets/export` writes its file for the length of one request |
+| `READ_TEMP_PATH` | `$TMPDIR/dwsim-read` | where `/flowsheets/read` creates each job's 0700 directory (upload, job file, worker scratch) for the length of one request |
 
 **Do not assume `MAX_CONCURRENT_SOLVES`.** The code falls back to 4 and the shipped images set 6.
 Read the effective value from `/health`'s `maxConcurrent`.
