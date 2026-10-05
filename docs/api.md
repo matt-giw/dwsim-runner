@@ -286,7 +286,6 @@ curl -s localhost:8080/health | jq .
     "landlockAbi": 6,              // the kernel's Landlock ABI; null = none (the read route then answers 503)
     "seccomp": true,
     "enforced": true,              // false ⇒ POST /flowsheets/read answers 503 SANDBOX_UNAVAILABLE
-    "signalScoped": true,          // Landlock signal scoping also applied (kernel ABI ≥ 6; not required)
     "checkedAt": "2026-10-05T00:18:40Z",
     "error": null                  // why it could not be applied, when it could not
   },
@@ -522,9 +521,7 @@ runs and before the upload is opened:
 2. A **Landlock** ruleset that handles every filesystem right the kernel knows and grants only the
    paths in the table below. **Landlock ABI 3 or later is required** (ABI 3 adds the truncate
    right; below it, truncating a same-account file outside the grants would not be refused), so
-   `enforced: true` means the same thing on every kernel. When the kernel offers ABI 6 or later the
-   ruleset also scopes **signals**: the worker cannot signal any process outside its sandbox. That
-   is applied when offered and not required (`readSandbox.signalScoped` says which).
+   `enforced: true` means the same thing on every kernel.
 3. A **seccomp** filter that refuses `socket()` for every address family (and `io_uring_setup`).
 
 Landlock and seccomp apply to the calling thread, and the .NET runtime already has other threads by
@@ -560,6 +557,11 @@ The engine's logger (`DWSIM.Logging.Logger`) writes to `$HOME/Documents/DWSIM Ap
 when `$HOME/Documents` exists, and otherwise to `<current directory>/DWSIM Application Data`. The
 read worker sets `HOME` to its job directory and creates `Documents` in it, so the log lands in the
 job directory and goes with it; nothing under the install needs to be writable.
+Workers in the other modes (solve, inspect, pfd, …) log under the runner's home: the image creates
+`/home/runner/Documents`, so their logger can start and a load failure names the engine's cause,
+not the logger's permission error. That directory is on none of the engine's assembly or plugin
+paths (above), and the engine reads no settings from it on the worker's paths (`Settings.LoadSettings`
+is called only from the desktop UI and the Excel add-in); `/home/runner` was already runner-owned.
 
 The API side: each upload is written as `upload.dwxml` (mode 0600) inside its own per-job directory
 (mode 0700) under `READ_TEMP_PATH`, together with the job file; the whole directory is deleted on
@@ -599,9 +601,10 @@ pfd, …) are not sandboxed and are unchanged.
   what keep the worker out of the API's process; a second account was not needed for that.
 - Landlock controls opening files, not looking them up: the read worker can still learn whether a
   path exists (`stat`), but cannot open, list or write it.
-- On kernels offering Landlock ABI 3–5 the read worker can still send signals to processes of the
-  same account (signal scoping needs ABI 6; `readSandbox.signalScoped` says whether it is applied).
-  An availability matter only.
+- The read worker can signal same-account processes. Landlock signal scoping (ABI 6+) is
+  deliberately not applied: it would bind the main thread before the re-exec while the runtime's
+  other threads are outside it, and on kernels before the same-process signal fix that window can
+  abort the worker. To be revisited when the deployed kernel is known. An availability matter only.
 - Landlock does not restrict `chmod`, `chown`, `utime` or extended attributes. The read worker can
   therefore change the mode or timestamps of same-account files it cannot open (for example make a
   saved template unreadable with mode 000). That affects availability, not confidentiality.

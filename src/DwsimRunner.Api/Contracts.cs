@@ -129,12 +129,11 @@ public record ProbeReport(string State, long ElapsedMs, string? CheckedAt, strin
 /// <param name="LandlockAbi">The Landlock ABI the kernel offers; null when it offers none.</param>
 /// <param name="Seccomp">Whether seccomp filtering is available (and, when enforced, in force).</param>
 /// <param name="Enforced">Whether a read worker on this host runs sandboxed (Landlock ABI 3 or later, seccomp). False ⇒ the read route answers 503.</param>
-/// <param name="SignalScoped">Whether Landlock signal scoping is also applied (offered from ABI 6; not required).</param>
 /// <param name="CheckedAt">When the probe answered, ISO-8601 UTC; null while pending.</param>
 /// <param name="Error">Why the sandbox could not be applied, when it could not.</param>
-public record ReadSandboxReport(string State, int? LandlockAbi, bool Seccomp, bool Enforced, bool SignalScoped, string? CheckedAt, string? Error)
+public record ReadSandboxReport(string State, int? LandlockAbi, bool Seccomp, bool Enforced, string? CheckedAt, string? Error)
 {
-    public static readonly ReadSandboxReport Pending = new("pending", null, false, false, false, null, null);
+    public static readonly ReadSandboxReport Pending = new("pending", null, false, false, null, null);
 }
 
 /// <summary>One template, curated or user-saved.</summary>

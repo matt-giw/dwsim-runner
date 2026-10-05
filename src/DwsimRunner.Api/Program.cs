@@ -396,13 +396,12 @@ void StartReadSandboxProbe()
                 r.TryGetProperty("landlockAbi", out var abi) && abi.ValueKind == JsonValueKind.Number ? abi.GetInt32() : null,
                 r.TryGetProperty("seccomp", out var sc) && sc.ValueKind == JsonValueKind.True,
                 run.ExitCode == 0 && r.TryGetProperty("enforced", out var en) && en.ValueKind == JsonValueKind.True,
-                run.ExitCode == 0 && r.TryGetProperty("signalScoped", out var ss) && ss.ValueKind == JsonValueKind.True,
                 DateTime.UtcNow.ToString("o"),
                 r.TryGetProperty("message", out var m) ? m.GetString() : null);
         }
         catch (Exception ex)
         {
-            readSandbox = new ReadSandboxReport("failed", null, false, false, false, DateTime.UtcNow.ToString("o"), ex.Message);
+            readSandbox = new ReadSandboxReport("failed", null, false, false, DateTime.UtcNow.ToString("o"), ex.Message);
         }
         finally
         {

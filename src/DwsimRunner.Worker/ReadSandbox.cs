@@ -56,10 +56,6 @@ internal static class ReadSandbox
     /// outside the grants is not refused, so the sandbox would not mean the same thing: refuse.</summary>
     internal const int MinimumAbi = 3;
 
-    /// <summary>ABI 6 adds LANDLOCK_SCOPE_SIGNAL. Applied when offered; not required (it guards
-    /// availability, not access, so requiring it would refuse older kernels for little gain).</summary>
-    private const int SignalScopeAbi = 6;
-
     private const string SandboxedVariable = "DWSIM_READ_SANDBOXED";
 
     /// <summary>
@@ -86,7 +82,6 @@ internal static class ReadSandbox
                 ["landlockAbi"] = LandlockAbi(),
                 ["seccomp"] = SeccompSupported(),
                 ["enforced"] = false,
-                ["signalScoped"] = false,
             }.ToJsonString());
             return ExitUnavailable;
         }
@@ -236,10 +231,6 @@ internal static class ReadSandbox
                         using (var s = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified))
                             s.Connect(new UnixDomainSocketEndPoint(path!));
                         break;
-                    case "signal-parent":   // signal 0: a permission check, nothing is delivered
-                        if (Native.kill(Native.getppid(), 0) != 0)
-                            throw new UnauthorizedAccessException($"kill(parent, 0) refused: errno {Marshal.GetLastPInvokeError()}");
-                        break;
                     default: throw new ArgumentException($"unknown probe op '{op}'");
                 }
                 results.Add(new JsonObject { ["op"] = op, ["ok"] = true });
@@ -257,7 +248,6 @@ internal static class ReadSandbox
             ["landlockAbi"] = LandlockAbi(),
             ["seccomp"] = Sandboxed || SeccompSupported(),
             ["enforced"] = Sandboxed,   // Sandboxed here means Verify() already passed in EnterIfRequired
-            ["signalScoped"] = Sandboxed && LandlockAbi() >= SignalScopeAbi,
             ["results"] = results,
         };
     }
@@ -304,11 +294,10 @@ internal static class ReadSandbox
         [StructLayout(LayoutKind.Sequential)]
         private struct RulesetAttr { public ulong HandledAccessFs; }
 
-        // The ABI-6 layout: handled_access_fs, handled_access_net (0 here: seccomp already refuses every
-        // socket), scoped. LANDLOCK_SCOPE_SIGNAL: no signal to a process outside this sandbox.
-        [StructLayout(LayoutKind.Sequential)]
-        private struct RulesetAttrV6 { public ulong HandledAccessFs; public ulong HandledAccessNet; public ulong Scoped; }
-        private const ulong SCOPE_SIGNAL = 1 << 1;
+        // Signal scoping (LANDLOCK_SCOPE_SIGNAL, ABI 6) is deliberately NOT applied (#31 final review):
+        // the ruleset binds the main thread before the re-exec while the runtime's other threads are
+        // outside it, and on kernels without the same-process signal fix a GC in that window could
+        // abort the worker. Revisit once the deployed kernel is known (docs/api.md, What remains).
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         private struct PathBeneathAttr { public ulong AllowedAccess; public int ParentFd; }
@@ -316,11 +305,8 @@ internal static class ReadSandbox
         internal static void Restrict(int abi, string jobDir)
         {
             var handled = Handled(abi);
-            var ruleset = abi >= SignalScopeAbi
-                ? (int)Native.WithPinned(new RulesetAttrV6 { HandledAccessFs = handled, Scoped = SCOPE_SIGNAL },
-                    attr => Native.syscall(SYS_create_ruleset, attr, Marshal.SizeOf<RulesetAttrV6>(), 0, 0))
-                : (int)Native.WithPinned(new RulesetAttr { HandledAccessFs = handled },
-                    attr => Native.syscall(SYS_create_ruleset, attr, Marshal.SizeOf<RulesetAttr>(), 0, 0));
+            var ruleset = (int)Native.WithPinned(new RulesetAttr { HandledAccessFs = handled },
+                attr => Native.syscall(SYS_create_ruleset, attr, Marshal.SizeOf<RulesetAttr>(), 0, 0));
             if (ruleset < 0) throw new SandboxUnavailableException($"landlock_create_ruleset failed: errno {Marshal.GetLastPInvokeError()}");
             try
             {
@@ -422,8 +408,6 @@ internal static class ReadSandbox
         [DllImport("libc", SetLastError = true)] internal static extern int open(string path, int flags);
         [DllImport("libc", SetLastError = true)] internal static extern int close(int fd);
         [DllImport("libc", SetLastError = true)] internal static extern int socket(int domain, int type, int protocol);
-        [DllImport("libc", SetLastError = true)] internal static extern int kill(int pid, int sig);
-        [DllImport("libc")] internal static extern int getppid();
         [DllImport("libc", SetLastError = true)] internal static extern int execve(string path, string?[] argv, string?[] envp);
 
         /// <summary>Pass a struct to native code by address: pinned for the duration of the call.</summary>

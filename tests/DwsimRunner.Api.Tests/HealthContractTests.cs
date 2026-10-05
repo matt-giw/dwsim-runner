@@ -142,7 +142,6 @@ public class HealthContractTests
         Assert.True(s.GetProperty("enforced").GetBoolean());
         Assert.True(s.GetProperty("seccomp").GetBoolean());
         Assert.Equal(6, s.GetProperty("landlockAbi").GetInt32());
-        Assert.True(s.GetProperty("signalScoped").GetBoolean());
     }
 
     // iskra 285 — the API's own not-dumpable flag is reported, not assumed (#31 third review).

@@ -168,31 +168,18 @@ public sealed class SandboxConformanceTests : IDisposable
         Assert.False(report["enforced"]!.GetValue<bool>());
     }
 
-    // Signal scoping is applied when the kernel offers Landlock ABI 6+, and not required below it.
-    [Fact]
-    public void Signals_to_the_parent_are_refused_when_the_kernel_offers_signal_scoping()
-    {
-        if (!OperatingSystem.IsLinux()) return;
-        var probe = new JsonObject { ["op"] = "signal-parent" };
-        var (openCode, open) = RunProbe(sandbox: false, (JsonObject)probe.DeepClone());
-        Assert.Equal(0, openCode);
-        Assert.True(open["results"]![0]!["ok"]!.GetValue<bool>(), open.ToJsonString());
-
-        var (code, boxed) = RunProbe(sandbox: true, probe);
-        Assert.Equal(0, code);
-        var scoped = boxed["landlockAbi"]!.GetValue<int>() >= 6;
-        Assert.Equal(scoped, boxed["signalScoped"]!.GetValue<bool>());
-        Assert.Equal(!scoped, boxed["results"]![0]!["ok"]!.GetValue<bool>());
-    }
-
     // A REAL engine read under the sandbox: the probe-mode tests use a stand-in engine directory, so
     // this is the one that proves the engine can load a file inside it on this kernel. Needs the real
     // DWSIM install (DWSIM_PATH) with native libraries for this CPU — CI's x86-64 worker job.
-    [Fact]
+    // Skipped, with the reason, where the engine's native libraries cannot load on this CPU (the
+    // DWSIM bundle's are x86-64, so an Apple-silicon container skips it); it runs on x86-64 CI.
+    [SkippableFact]
     [Trait("Category", "SandboxRealRead")]
     public void A_real_engine_read_succeeds_under_the_sandbox()
     {
-        if (!OperatingSystem.IsLinux()) return;
+        Skip.IfNot(OperatingSystem.IsLinux(), "the read sandbox is Linux-only");
+        var mismatch = EngineNatives.MismatchReason();
+        Skip.If(mismatch is not null, mismatch);
         var template = Path.Combine(RepoRoot(), "templates", "methanol_synthesis.dwxmz");
         using (var zip = System.IO.Compression.ZipFile.OpenRead(template))
         using (var xml = zip.Entries.First(e => e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)).Open())
