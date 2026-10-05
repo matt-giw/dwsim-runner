@@ -83,3 +83,9 @@ jobs:
 
       - name: Build Worker unit tier
         run: dotnet build tests/DwsimRunner.Worker.Tests/DwsimRunner.Worker.Tests.csproj -c Release
+
+      # iskra 285 — the read worker's sandbox, measured on this runner's own Linux kernel (native
+      # x86-64, a non-root user). These run the real worker as a child process; they need the DWSIM
+      # path only to start it, never the engine. The rest of the unit tier is still not run here.
+      - name: Read-sandbox conformance tests (Category=Sandbox)
+        run: dotnet test tests/DwsimRunner.Worker.Tests/DwsimRunner.Worker.Tests.csproj -c Release --no-build --filter Category=Sandbox --logger "console;verbosity=normal" -- RunConfiguration.DisableParallelization=true
