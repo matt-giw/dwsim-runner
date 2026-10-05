@@ -115,4 +115,82 @@ public class SanitizerTests
             + "new: " + string.Join(",", engine.Except(Sanitizer.ReviewedObjectTypes))
             + " gone: " + string.Join(",", Sanitizer.ReviewedObjectTypes.Except(engine)));
     }
+
+    // The same guard for property packages and graphic objects, which are now allowed by EXACT name
+    // rather than by namespace prefix. The engine's built-in set is read from the real assemblies; if
+    // a DWSIM upgrade adds or removes a class, these fail and the allow-lists are re-reviewed.
+    [Fact]
+    public void Every_engine_property_package_type_has_been_reviewed()
+    {
+        var engine = EngineTypes(typeof(DWSIM.Interfaces.IPropertyPackage), "DWSIM.Thermodynamics.dll");
+        AssertReviewed(engine, Sanitizer.EnginePackageTypes, "property package");
+    }
+
+    [Fact]
+    public void Every_engine_graphic_object_type_has_been_reviewed()
+    {
+        var engine = EngineTypes(typeof(DWSIM.Interfaces.IGraphicObject),
+            "DWSIM.Drawing.SkiaSharp.dll", "DWSIM.DrawingTools.SkiaSharp.Extended.dll");
+        AssertReviewed(engine, Sanitizer.EngineGraphicTypes, "graphic object");
+        Assert.Subset(Sanitizer.EngineGraphicTypes, Sanitizer.AllowedEngineGraphicTypes);
+    }
+
+    // The names kept because they resolve to nothing in this engine must STILL resolve to nothing in
+    // every assembly the loader looks them up in, or they are no longer inert and need a review.
+    [Fact]
+    public void Names_kept_as_unresolved_resolve_to_no_engine_type()
+    {
+        var lookIn = new[] { "DWSIM.FlowsheetBase.dll", "DWSIM.Thermodynamics.dll", "DWSIM.Drawing.SkiaSharp.dll",
+                             "DWSIM.DrawingTools.SkiaSharp.Extended.dll" }
+            .Select(f => System.Reflection.Assembly.LoadFrom(System.IO.Path.Combine(DwsimResolver.DwsimPath, f)))
+            .ToList();
+        var resolved = Sanitizer.UnresolvedPackageTypes.Concat(Sanitizer.UnresolvedGraphicTypes)
+            .Where(n => lookIn.Any(a => a.GetType(n) is not null) || System.Type.GetType(n) is not null)
+            .ToList();
+        Assert.True(resolved.Count == 0, "now resolve to an engine type; review them: " + string.Join(",", resolved));
+    }
+
+    [Theory]
+    [InlineData("DWSIM.Thermodynamics.PropertyPackages.Auxiliary.FlashAlgorithms.NestedLoops")]  // under the old prefix
+    [InlineData("DWSIM.Thermodynamics.PropertyPackages.NotAPackage")]
+    public void A_package_type_outside_the_exact_list_is_stripped(string type)
+    {
+        var xml = Doc($"<PropertyPackages><PropertyPackage><Tag>pp</Tag><Type>{type}</Type></PropertyPackage>"
+                    + "<PropertyPackage><Tag>keep</Tag><Type>DWSIM.Thermodynamics.PropertyPackages.PengRobinsonPropertyPackage</Type></PropertyPackage></PropertyPackages>");
+
+        var (clean, removed) = Sanitizer.Sanitize(xml);
+
+        Assert.DoesNotContain(type, clean);
+        Assert.Contains("PengRobinsonPropertyPackage", clean);
+        Assert.Contains(removed, r => r.Kind == "unsupportedType" && r.Detail.Contains(type));
+    }
+
+    [Theory]
+    [InlineData("DWSIM.Drawing.SkiaSharp.GraphicObjects.Shapes.ScriptGraphic")]   // an engine type, not allowed
+    [InlineData("DWSIM.Drawing.SkiaSharp.GraphicObjects.Shapes.NotAGraphic")]     // under the old prefix
+    public void A_graphic_type_outside_the_exact_list_is_stripped(string type)
+    {
+        var xml = Doc($"<GraphicObjects><GraphicObject><Name>g</Name><Type>{type}</Type></GraphicObject></GraphicObjects>");
+        var (clean, removed) = Sanitizer.Sanitize(xml);
+        Assert.DoesNotContain(type, clean);
+        Assert.Contains(removed, r => r.Kind == "unsupportedType" && r.Detail.Contains(type));
+    }
+
+    private static HashSet<string> EngineTypes(System.Type contract, params string[] assemblies) =>
+        assemblies
+            .Select(f => System.Reflection.Assembly.LoadFrom(System.IO.Path.Combine(DwsimResolver.DwsimPath, f)))
+            .SelectMany(a =>
+            {
+                try { return a.GetTypes(); }
+                catch (System.Reflection.ReflectionTypeLoadException e) { return e.Types.Where(t => t is not null).Cast<System.Type>().ToArray(); }
+            })
+            .Where(t => t.IsClass && !t.IsAbstract && contract.IsAssignableFrom(t))
+            .Select(t => t.FullName!)
+            .ToHashSet();
+
+    private static void AssertReviewed(HashSet<string> engine, HashSet<string> reviewed, string what) =>
+        Assert.True(engine.SetEquals(reviewed),
+            $"the engine's {what} types changed; re-review the sanitiser allow-list. "
+            + "new: " + string.Join(",", engine.Except(reviewed))
+            + " gone: " + string.Join(",", reviewed.Except(engine)));
 }
