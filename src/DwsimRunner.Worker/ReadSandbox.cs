@@ -48,9 +48,19 @@ internal static class ReadSandbox
     /// worker-environment allow-list never passes it, so production cannot set it.</summary>
     internal const string ForceUnavailableVariable = "DWSIM_READ_SANDBOX_TEST_UNAVAILABLE";
 
-    private const string SandboxedVariable = "DWSIM_READ_SANDBOXED";
+    /// <summary>Test-only: the Landlock ABI the MINIMUM is checked against is min(real, this). It can
+    /// only cause a refusal: the ruleset is always built from the kernel's real ABI. Not passed by the API.</summary>
+    internal const string TestAbiVariable = "DWSIM_READ_SANDBOX_TEST_ABI";
 
-    private sealed class Unavailable(string message) : Exception(message);
+    /// <summary>ABI 3 adds LANDLOCK_ACCESS_FS_TRUNCATE. Below it, truncate(2) on a same-account file
+    /// outside the grants is not refused, so the sandbox would not mean the same thing: refuse.</summary>
+    internal const int MinimumAbi = 3;
+
+    /// <summary>ABI 6 adds LANDLOCK_SCOPE_SIGNAL. Applied when offered; not required (it guards
+    /// availability, not access, so requiring it would refuse older kernels for little gain).</summary>
+    private const int SignalScopeAbi = 6;
+
+    private const string SandboxedVariable = "DWSIM_READ_SANDBOXED";
 
     /// <summary>
     /// The worker's FIRST act. For `read` (and a sandboxed `sandbox-probe`) it applies the sandbox and
@@ -65,7 +75,7 @@ internal static class ReadSandbox
         {
             if (Sandboxed) { Verify(); return null; }
             ApplyAndReexec(jobFile);
-            throw new Unavailable("execve returned");   // unreachable on success
+            throw new SandboxUnavailableException("execve returned");   // unreachable on success
         }
         catch (Exception ex)
         {
@@ -76,6 +86,7 @@ internal static class ReadSandbox
                 ["landlockAbi"] = LandlockAbi(),
                 ["seccomp"] = SeccompSupported(),
                 ["enforced"] = false,
+                ["signalScoped"] = false,
             }.ToJsonString());
             return ExitUnavailable;
         }
@@ -83,42 +94,49 @@ internal static class ReadSandbox
 
     private static bool Sandboxed => Environment.GetEnvironmentVariable(SandboxedVariable) == "1";
 
+    // The gate reads the job EXACTLY as Program.cs's dispatcher does — the same deserialiser, the
+    // same case-insensitive property names, the same ToLowerInvariant on the mode — so any job the
+    // dispatcher sends to `read` passes through here (#31 third review A: a case-sensitive "mode" here
+    // let {"Mode":"read"} skip it). The reader also refuses to run unsandboxed (Verify at the sink).
+    private sealed record GateView(string? Mode, bool? Sandbox);
+
     private static bool Required(string jobFile)
     {
+        GateView? job;
         try
         {
-            using var doc = JsonDocument.Parse(File.ReadAllText(jobFile));
-            var root = doc.RootElement;
-            var mode = root.TryGetProperty("mode", out var m) ? m.GetString()?.ToLowerInvariant() : null;
-            return mode switch
-            {
-                "read" => true,
-                "sandbox-probe" => !(root.TryGetProperty("sandbox", out var s) && s.ValueKind == JsonValueKind.False),
-                _ => false,
-            };
+            job = JsonSerializer.Deserialize<GateView>(File.ReadAllText(jobFile),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
-            return false;   // not a job this file can parse; the ordinary path fails it as before
+            return false;   // the dispatcher cannot parse it either; it fails the ordinary way, reader unreached
         }
+        return job?.Mode?.ToLowerInvariant() switch
+        {
+            "read" => true,
+            "sandbox-probe" => job.Sandbox != false,
+            _ => false,
+        };
     }
 
     private static void ApplyAndReexec(string jobFile)
     {
-        if (!OperatingSystem.IsLinux()) throw new Unavailable("not Linux");
-        if (Environment.GetEnvironmentVariable(ForceUnavailableVariable) == "1") throw new Unavailable("forced by the test switch");
-        var arch = Arch.Current ?? throw new Unavailable($"no seccomp filter for {RuntimeInformation.ProcessArchitecture}");
+        if (!OperatingSystem.IsLinux()) throw new SandboxUnavailableException("not Linux");
+        if (Environment.GetEnvironmentVariable(ForceUnavailableVariable) == "1") throw new SandboxUnavailableException("forced by the test switch");
+        var arch = Arch.Current ?? throw new SandboxUnavailableException($"no seccomp filter for {RuntimeInformation.ProcessArchitecture}");
 
         // The job directory is TMPDIR, set per job by the API. The job file must be inside it: after
         // the re-exec nothing else is readable.
         var tmp = Environment.GetEnvironmentVariable("TMPDIR");
         var jobDir = string.IsNullOrEmpty(tmp) ? "" : Path.GetFullPath(tmp).TrimEnd('/');
         if (jobDir.Length == 0 || !Directory.Exists(jobDir))
-            throw new Unavailable("TMPDIR (the per-job directory) is not set or does not exist");
+            throw new SandboxUnavailableException("TMPDIR (the per-job directory) is not set or does not exist");
         if (!Path.GetFullPath(jobFile).StartsWith(jobDir + "/", StringComparison.Ordinal))
-            throw new Unavailable("the job file is not inside the per-job directory");
+            throw new SandboxUnavailableException("the job file is not inside the per-job directory");
 
-        var abi = LandlockAbi() ?? throw new Unavailable("Landlock is not available (landlock_create_ruleset failed)");
+        var abi = LandlockAbi() ?? throw new SandboxUnavailableException("Landlock is not available (landlock_create_ruleset failed)");
+        RequireMinimumAbi(abi);
 
         // DWSIM.Logging.Logger writes to $HOME/Documents/DWSIM Application Data when $HOME/Documents
         // exists, and to "<cwd>/DWSIM Application Data" otherwise (Environment.GetFolderPath(Personal)
@@ -126,7 +144,7 @@ internal static class ReadSandbox
         Directory.CreateDirectory(Path.Combine(jobDir, "Documents"));
 
         if (Native.prctl(Native.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
-            throw new Unavailable($"PR_SET_NO_NEW_PRIVS failed: errno {Marshal.GetLastPInvokeError()}");
+            throw new SandboxUnavailableException($"PR_SET_NO_NEW_PRIVS failed: errno {Marshal.GetLastPInvokeError()}");
         Landlock.Restrict(abi, jobDir);
         Seccomp.Install(arch);
 
@@ -139,20 +157,33 @@ internal static class ReadSandbox
         string?[] argv = [self, typeof(ReadSandbox).Assembly.Location, Path.GetFullPath(jobFile), null];
         string?[] envp = [.. env.Select(kv => $"{kv.Key}={kv.Value}"), null];
         Native.execve(self, argv, envp);
-        throw new Unavailable($"execve failed: errno {Marshal.GetLastPInvokeError()}");
+        throw new SandboxUnavailableException($"execve failed: errno {Marshal.GetLastPInvokeError()}");
     }
 
-    /// <summary>In the re-exec'd process: prove the sandbox is in force rather than trusting the marker.</summary>
-    private static void Verify()
+    private static void RequireMinimumAbi(int abi)
     {
+        var checkedAbi = int.TryParse(Environment.GetEnvironmentVariable(TestAbiVariable), out var cap) ? Math.Min(abi, cap) : abi;
+        if (checkedAbi < MinimumAbi)
+            throw new SandboxUnavailableException($"the kernel offers Landlock ABI {checkedAbi}; the read sandbox needs ABI {MinimumAbi} or later (truncate is not controlled before ABI {MinimumAbi})");
+    }
+
+    /// <summary>
+    /// Prove the sandbox is in force in THIS process rather than trusting the marker. Called by the
+    /// gate in the re-exec'd worker, and as the first statement of Reader.Read, so no route into the
+    /// reader exists without an enforced sandbox whatever the dispatch did.
+    /// </summary>
+    internal static void Verify()
+    {
+        if (!Sandboxed) throw new SandboxUnavailableException("the read sandbox is not in force in this process");
+        RequireMinimumAbi(LandlockAbi() ?? 0);
         if (!OperatingSystem.IsLinux() || Native.prctl(Native.PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1)
-            throw new Unavailable("no_new_privs is not set");
+            throw new SandboxUnavailableException("no_new_privs is not set");
         if (Native.prctl(Native.PR_GET_SECCOMP, 0, 0, 0, 0) != 2)
-            throw new Unavailable("no seccomp filter is in force");
+            throw new SandboxUnavailableException("no seccomp filter is in force");
         var fd = Native.open("/", Native.O_RDONLY | Native.O_CLOEXEC);
-        if (fd >= 0) { Native.close(fd); throw new Unavailable("the filesystem is not restricted (/ is readable)"); }
+        if (fd >= 0) { Native.close(fd); throw new SandboxUnavailableException("the filesystem is not restricted (/ is readable)"); }
         var sock = Native.socket(2 /* AF_INET */, 1 /* SOCK_STREAM */, 0);
-        if (sock >= 0) { Native.close(sock); throw new Unavailable("sockets can still be created"); }
+        if (sock >= 0) { Native.close(sock); throw new SandboxUnavailableException("sockets can still be created"); }
     }
 
     /// <summary>The Landlock ABI the kernel offers, or null when it offers none (or under the test switch).</summary>
@@ -205,6 +236,10 @@ internal static class ReadSandbox
                         using (var s = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified))
                             s.Connect(new UnixDomainSocketEndPoint(path!));
                         break;
+                    case "signal-parent":   // signal 0: a permission check, nothing is delivered
+                        if (Native.kill(Native.getppid(), 0) != 0)
+                            throw new UnauthorizedAccessException($"kill(parent, 0) refused: errno {Marshal.GetLastPInvokeError()}");
+                        break;
                     default: throw new ArgumentException($"unknown probe op '{op}'");
                 }
                 results.Add(new JsonObject { ["op"] = op, ["ok"] = true });
@@ -222,6 +257,7 @@ internal static class ReadSandbox
             ["landlockAbi"] = LandlockAbi(),
             ["seccomp"] = Sandboxed || SeccompSupported(),
             ["enforced"] = Sandboxed,   // Sandboxed here means Verify() already passed in EnterIfRequired
+            ["signalScoped"] = Sandboxed && LandlockAbi() >= SignalScopeAbi,
             ["results"] = results,
         };
     }
@@ -268,15 +304,24 @@ internal static class ReadSandbox
         [StructLayout(LayoutKind.Sequential)]
         private struct RulesetAttr { public ulong HandledAccessFs; }
 
+        // The ABI-6 layout: handled_access_fs, handled_access_net (0 here: seccomp already refuses every
+        // socket), scoped. LANDLOCK_SCOPE_SIGNAL: no signal to a process outside this sandbox.
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RulesetAttrV6 { public ulong HandledAccessFs; public ulong HandledAccessNet; public ulong Scoped; }
+        private const ulong SCOPE_SIGNAL = 1 << 1;
+
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         private struct PathBeneathAttr { public ulong AllowedAccess; public int ParentFd; }
 
         internal static void Restrict(int abi, string jobDir)
         {
             var handled = Handled(abi);
-            var ruleset = (int)Native.WithPinned(new RulesetAttr { HandledAccessFs = handled },
-                attr => Native.syscall(SYS_create_ruleset, attr, Marshal.SizeOf<RulesetAttr>(), 0, 0));
-            if (ruleset < 0) throw new Unavailable($"landlock_create_ruleset failed: errno {Marshal.GetLastPInvokeError()}");
+            var ruleset = abi >= SignalScopeAbi
+                ? (int)Native.WithPinned(new RulesetAttrV6 { HandledAccessFs = handled, Scoped = SCOPE_SIGNAL },
+                    attr => Native.syscall(SYS_create_ruleset, attr, Marshal.SizeOf<RulesetAttrV6>(), 0, 0))
+                : (int)Native.WithPinned(new RulesetAttr { HandledAccessFs = handled },
+                    attr => Native.syscall(SYS_create_ruleset, attr, Marshal.SizeOf<RulesetAttr>(), 0, 0));
+            if (ruleset < 0) throw new SandboxUnavailableException($"landlock_create_ruleset failed: errno {Marshal.GetLastPInvokeError()}");
             try
             {
                 // Read-only: the system libraries and .NET (both under /usr in the image; the dotnet root
@@ -300,7 +345,7 @@ internal static class ReadSandbox
                 Grant(ruleset, jobDir, handled, required: true);
 
                 if (Native.syscall(SYS_restrict_self, ruleset, 0, 0, 0) != 0)
-                    throw new Unavailable($"landlock_restrict_self failed: errno {Marshal.GetLastPInvokeError()}");
+                    throw new SandboxUnavailableException($"landlock_restrict_self failed: errno {Marshal.GetLastPInvokeError()}");
             }
             finally { Native.close(ruleset); }
         }
@@ -310,7 +355,7 @@ internal static class ReadSandbox
             var fd = Native.open(path, Native.O_PATH | Native.O_CLOEXEC);
             if (fd < 0)
             {
-                if (required) throw new Unavailable($"cannot open '{path}' to grant it: errno {Marshal.GetLastPInvokeError()}");
+                if (required) throw new SandboxUnavailableException($"cannot open '{path}' to grant it: errno {Marshal.GetLastPInvokeError()}");
                 return;
             }
             try
@@ -318,7 +363,7 @@ internal static class ReadSandbox
                 if (!Directory.Exists(path)) access &= FileRights;   // a rule on a file may carry only file rights
                 var rc = Native.WithPinned(new PathBeneathAttr { AllowedAccess = access, ParentFd = fd },
                     rule => Native.syscall(SYS_add_rule, ruleset, RULE_PATH_BENEATH, rule, 0));
-                if (rc != 0) throw new Unavailable($"landlock_add_rule '{path}' failed: errno {Marshal.GetLastPInvokeError()}");
+                if (rc != 0) throw new SandboxUnavailableException($"landlock_add_rule '{path}' failed: errno {Marshal.GetLastPInvokeError()}");
             }
             finally { Native.close(fd); }
         }
@@ -357,7 +402,7 @@ internal static class ReadSandbox
             {
                 var rc = Native.WithPinned(new Prog { Len = (ushort)f.Length, Filter = pin.AddrOfPinnedObject() },
                     prog => Native.prctl(Native.PR_SET_SECCOMP, Native.SECCOMP_MODE_FILTER, prog, 0, 0));
-                if (rc != 0) throw new Unavailable($"installing the seccomp filter failed: errno {Marshal.GetLastPInvokeError()}");
+                if (rc != 0) throw new SandboxUnavailableException($"installing the seccomp filter failed: errno {Marshal.GetLastPInvokeError()}");
             }
             finally { pin.Free(); }
         }
@@ -377,6 +422,8 @@ internal static class ReadSandbox
         [DllImport("libc", SetLastError = true)] internal static extern int open(string path, int flags);
         [DllImport("libc", SetLastError = true)] internal static extern int close(int fd);
         [DllImport("libc", SetLastError = true)] internal static extern int socket(int domain, int type, int protocol);
+        [DllImport("libc", SetLastError = true)] internal static extern int kill(int pid, int sig);
+        [DllImport("libc")] internal static extern int getppid();
         [DllImport("libc", SetLastError = true)] internal static extern int execve(string path, string?[] argv, string?[] envp);
 
         /// <summary>Pass a struct to native code by address: pinned for the duration of the call.</summary>
@@ -389,3 +436,5 @@ internal static class ReadSandbox
         }
     }
 }
+
+internal sealed class SandboxUnavailableException(string message) : Exception(message);

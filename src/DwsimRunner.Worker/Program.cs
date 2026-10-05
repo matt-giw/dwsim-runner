@@ -69,6 +69,11 @@ catch (WorkerInputException ex)
     exitCode = 2;
     payload = new ErrorDoc(ex.Code, ex.Message, ex.Detail);
 }
+catch (SandboxUnavailableException ex)
+{
+    exitCode = ReadSandbox.ExitUnavailable;
+    payload = new ErrorDoc("SANDBOX_UNAVAILABLE", ex.Message, null);
+}
 catch (TemplateLoadException ex)
 {
     exitCode = 3;

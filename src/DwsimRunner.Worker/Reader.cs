@@ -33,6 +33,10 @@ internal static partial class Reader
 
     public static JsonObject Read(Job job)
     {
+        // #31 third review A — the sink check: no route into the reader exists without an enforced
+        // sandbox, whatever the dispatcher or the gate decided. Throws SandboxUnavailableException (exit 7).
+        ReadSandbox.Verify();
+
         var path = job.Template ?? throw new WorkerInputException("INVALID_REQUEST", "template (the file path) is required for read mode");
 
         // #31 review 1 — the API hands this file as already-inflated XML; the engine NEVER sees the
