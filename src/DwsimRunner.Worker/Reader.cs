@@ -548,14 +548,6 @@ internal static partial class Reader
             };
         }
 
-        // ISK-485 (iskra 285 SC-002 cause 3) — the catalog's premise that a Heater has no outlet-VF
-        // property is wrong for DWSIM 9.0.5: `Heater.OutletVaporFraction` (m_VFout, double?) exists,
-        // is serialized, and the VF branch of `Calculate` hands it raw to the PVF flash — a MOLE
-        // FRACTION, not a percent. Read here and not declared in the catalog, because declaring it
-        // would also make build-solve accept it, and that write path has not been probed (GP-19).
-        if (def.Type == "heater" && mode == "outletVaporFraction"
-            && GetEngineValue(so, ["OutletVaporFraction"]) is double vf && double.IsFinite(vf))
-            bag["outletVaporFraction"] = vf;
         return bag;
     }
 
