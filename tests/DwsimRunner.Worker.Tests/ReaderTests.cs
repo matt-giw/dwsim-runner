@@ -168,6 +168,25 @@ public class ReaderTests
         Assert.False(bag.ContainsKey("openingPct"), $"a default opening was emitted as a spec: {bag.ToJsonString()}");
     }
 
+    // ISK-485 / iskra 285 SC-002 cause 3 — the HEATER does carry `OutletVaporFraction` (m_VFout, a
+    // mole fraction the VF branch of `Calculate` hands raw to the PVF flash), so a heater in that mode
+    // reads back its setpoint like the cooler does. Read-route only: the catalog still does not offer
+    // it to build-solve.
+    [Fact]
+    public void A_heater_in_vapour_fraction_mode_reads_back_its_setpoint()
+    {
+        var heater = new Heater { CalcMode = Heater.CalculationMode.OutletVaporFraction, OutletVaporFraction = 0.37 };
+
+        var bag = Reader.ReadParameters(heater, UnitOpCatalog.Types["heater"], out var mode);
+
+        Assert.Equal("outletVaporFraction", mode);
+        Assert.Equal(0.37, (double)bag["outletVaporFraction"]!, 6);
+
+        // ...and it is a specification only in that mode — every other branch WRITES the outlet VF.
+        heater.CalcMode = Heater.CalculationMode.HeatAdded;
+        Assert.False(Reader.ReadParameters(heater, UnitOpCatalog.Types["heater"], out _).ContainsKey("outletVaporFraction"));
+    }
+
     [Fact]
     public void A_collapsed_mode_reads_back_as_its_survivor()
     {
