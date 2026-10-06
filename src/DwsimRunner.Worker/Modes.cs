@@ -385,6 +385,22 @@ static class Modes
         warnings.AddRange(streams.SelectMany(s => SolidsCheck.BelowMeltingPoint(s.Name, s.TemperatureC, PhasesOf(s), meltingPointK, solids)));
         if (solids.Count == 0) return (streams, energy, unitOps);
 
+        // 4. Measured 2026-10-05 (iskra 281 US3): an equilibrium reactor fed a solid converges and
+        //    sends the solid to its liquid outlet BY MASS — the balance closes — but that stream comes
+        //    back with no composition and no phase. 4,100 kg/h of something. The mislabel guard above
+        //    cannot see it (nothing is in a fluid phase; nothing is anywhere), so this one does: a
+        //    stream that carries mass and says nothing about what it is, is refused by name.
+        var unresolved = streams
+            .Where(s => s.MassFlowKgH is > 1e-9 && (s.Phases is null || s.Phases.Count == 0) && (s.CompositionMol is null || s.CompositionMol.Count == 0))
+            .Select(s => new BuildIssue("error", "SOLID_STREAM_UNRESOLVED", s.Name, null,
+                $"{s.Name}: carries {s.MassFlowKgH:0.###} kg/h but the engine reported no phase and no composition for it; " +
+                "a unit that received a defined solid left this outlet unresolved (measured on the equilibrium reactor), " +
+                "so the result is refused rather than reported"))
+            .ToList();
+        if (unresolved.Count > 0)
+            throw new BuildAbortException("SOLID_STREAM_UNRESOLVED", "a stream carrying a defined solid came back unresolved",
+                [.. unresolved, .. warnings.Select(w => new BuildIssue("warning", "ENGINE", null, null, w))]);
+
         var feeds = new HashSet<string>(fs.SimulationObjects.Values
             .OfType<DWSIM.Thermodynamics.Streams.MaterialStream>()
             .Where(ms => ms.GraphicObject?.InputConnectors is not { Count: > 0 } ins || !ins[0].IsAttached)

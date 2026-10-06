@@ -903,6 +903,13 @@ enthalpy balance computed them — a heater on a duty, a mixer, a compressor), `
 `SOLID_ENTHALPY_UNMEASURED` in `warnings`. A feed's temperature was stated by the caller and
 stays. Compositions, phases, flows and pressures are reported.
 
+**An equilibrium reactor fed a defined solid is refused.** Measured 2026-10-05 on
+`3 Fe + 4 H2O → Fe3O4 + 4 H2` at 700 °C: the reactor converges, the vapour outlet is a real stream,
+and the liquid outlet carries the solids' whole mass — the balance closes — with **no composition
+and no phase**. A stream that carries mass and says nothing about what it is, is refused
+`SOLID_STREAM_UNRESOLVED`, naming it. The vapour outlet's steam/hydrogen ratio was not checked
+against a reference because the solid outlet it depends on is unreadable.
+
 **Not measured, so not promised:** whether any setting keeps a defined solid out of a coexisting
 liquid; whether a vaporisation-enthalpy correlation evaluating to zero would make the solid's
 enthalpy follow its own heat capacity (the path to reporting energy again);
