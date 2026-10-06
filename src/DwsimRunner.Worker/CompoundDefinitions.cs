@@ -18,7 +18,9 @@ namespace DwsimRunner.Worker;
 
 /// <summary>One parsed definition. `Values` holds every required key, in the unit `SolidValues` names.</summary>
 public sealed record CompoundDefinition(string Name, string? Formula, string? CasNumber, string Kind,
-    IReadOnlyDictionary<string, double> Values);
+    IReadOnlyDictionary<string, double> Values,
+    /// <summary>Its position in the request's array, so a refusal points at the entry the caller sent.</summary>
+    int Index);
 
 public static class CompoundDefinitions
 {
@@ -109,7 +111,8 @@ public static class CompoundDefinitions
             }
             if (kind != "solid")
             {
-                Error("COMPOUND_DEFINITION_INVALID", $"compound '{name}' has kind '{kind}'; expected 'solid' or 'fluid'", path);
+                Error("COMPOUND_DEFINITION_INVALID",
+                    $"compound '{name}' {(kind is null ? "has no kind" : $"has kind '{kind}'")}; expected 'solid'", path);
                 continue;
             }
 
@@ -148,7 +151,7 @@ public static class CompoundDefinitions
             }
 
             if (issues.Count == before)
-                defs.Add(new CompoundDefinition(name, Str(d, "formula"), Str(d, "casNumber"), kind, values));
+                defs.Add(new CompoundDefinition(name, Str(d, "formula"), Str(d, "casNumber"), kind, values, index));
         }
         return defs;
 
@@ -163,18 +166,17 @@ public static class CompoundDefinitions
     /// </summary>
     public static void Register(DWSIM.Automation.Automation3 auto, IReadOnlyList<CompoundDefinition> defs, List<BuildIssue> issues)
     {
-        for (var i = 0; i < defs.Count; i++)
+        foreach (var d in defs)
         {
-            var d = defs[i];
             var existing = auto.AvailableCompounds.Keys
                 .FirstOrDefault(k => string.Equals(k, d.Name, StringComparison.OrdinalIgnoreCase));
             if (existing is not null)
             {
-                issues.Add(new BuildIssue("error", "COMPOUND_DEFINITION_CONFLICT", null, $"compoundDefinitions[{i}]",
+                issues.Add(new BuildIssue("error", "COMPOUND_DEFINITION_CONFLICT", null, $"compoundDefinitions[{d.Index}]",
                     $"compound '{d.Name}' is defined on the request but '{existing}' is already an engine compound"));
                 continue;
             }
-            auto.AvailableCompounds.Add(d.Name, Build(d, i));
+            auto.AvailableCompounds.Add(d.Name, Build(d, d.Index));
         }
     }
 
@@ -205,9 +207,27 @@ public static class CompoundDefinitions
             ((DWSIM.Thermodynamics.PropertyPackages.PropertyPackage)package).FlashSettings[setting] = value;
     }
 
-    /// <summary>The names of the defined solids, for the package gate and the post-solve guard.</summary>
+    /// <summary>The names of the defined solids, for the package gate at build time.</summary>
     public static HashSet<string> SolidNames(IEnumerable<CompoundDefinition> defs) =>
         new(defs.Where(d => d.Kind == "solid").Select(d => d.Name), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The always-solid compounds a FLOWSHEET carries, read off the flowsheet rather than the request.
+    /// Review of #34: a solve saved as a template carries its defined solids into the .dwxmz, and the
+    /// template path has no request to read them from — so the guard and the energy rule read this,
+    /// on both entry points, and cannot differ (Hazard 7). None of the engine's own compounds has
+    /// IsSolid set (measured 2026-10-04), so on a document without definitions this is empty.
+    /// </summary>
+    public static HashSet<string> SolidsOf(DWSIM.Interfaces.IFlowsheet fs) =>
+        new(fs.SelectedCompounds.Where(kv => kv.Value.IsSolid).Select(kv => kv.Key), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Every selected compound's melting point, K — one reader for both solve paths and the flash.</summary>
+    public static Dictionary<string, double> MeltingPoints(DWSIM.Interfaces.IFlowsheet fs)
+    {
+        var points = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, c) in fs.SelectedCompounds) points[name] = c.TemperatureOfFusion;
+        return points;
+    }
 
     internal static ConstantProperties Build(CompoundDefinition d, int index)
     {
@@ -283,8 +303,9 @@ public static class SolidsCheck
     /// </summary>
     public const string EnergyWarning =
         "[SOLID_ENTHALPY_UNMEASURED] energy results withheld: the enthalpy of a defined solid depends on engine " +
-        "placeholders, not on its physical values (measured 2026-10-05), so duties, powers, enthalpies and " +
-        "entropies on this request are not reported";
+        "placeholders, not on its physical values (measured 2026-10-05), so duties, powers, enthalpies, entropies, " +
+        "and the temperature of every stream that is not a feed (an enthalpy balance computed it) are not reported; " +
+        "compositions, phases, flows and pressures are";
 
     private static bool IsEnergyKey(string key) =>
         key.Contains("enthalpy", StringComparison.OrdinalIgnoreCase)

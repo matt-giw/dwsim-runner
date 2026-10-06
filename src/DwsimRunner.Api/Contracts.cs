@@ -440,8 +440,9 @@ public sealed record ValidationResponse(bool Valid, List<IssueResponse> Issues);
 /// <param name="EntropyKJKgK">Mixture specific entropy, kJ/(kg.K).</param>
 /// <param name="DensityKgM3">Mixture density, kg/m3, when the engine reports one.</param>
 /// <param name="Warnings">
-/// Present only when there is one. Today: BELOW_MELTING_POINT_AS_LIQUID — a liquid phase that is
-/// mostly a compound below its own melting point. The numbers are unchanged by a warning.
+/// Present only when there is one. BELOW_MELTING_POINT_AS_LIQUID — a liquid phase that is mostly a
+/// compound below its own melting point; the numbers are unchanged by it. SOLID_ENTHALPY_UNMEASURED —
+/// a solid is defined, so enthalpyKJKg and entropyKJKgK are absent.
 /// </param>
 public sealed record FlashResponse(
     double VaporFraction, double? TemperatureC, double? PressureBar,

@@ -818,7 +818,12 @@ and the document form of `/compare` and `/optimize`.
 A compound the engine does not ship can be **defined on the request that uses it**: on a document
 (`validate`, `build-solve`, `pfd`) and on `/flash`. The definition exists for that one request. The
 runner stores nothing — one worker process per job, and a second request that names the compound
-without defining it gets `UNKNOWN_COMPOUND`. Whoever calls owns the library.
+without defining it is refused as any unknown name is: `UNKNOWN_COMPOUND` on a document route,
+`FLASH_INVALID` ("'Iron' not found") on `/flash`. Whoever calls owns the library.
+
+One thing IS kept: a `build-solve` with `saveAsTemplate` writes its defined solids into the
+`.dwxmz`, so a later `/solve` of that template carries them. The rules below read the solids off
+the flowsheet, so they apply there too.
 
 ```jsonc
 "compounds": ["Water", "Iron"],
@@ -882,9 +887,12 @@ phases a defined solid lands in do not move when the runner's placeholders are v
 stream's enthalpy moves by up to 4× with the critical temperature, critical pressure and boiling
 point placeholders — the engine reaches a solid's enthalpy through an ideal-gas reference and a
 vaporisation step those control. So on such a request every duty and power is `null`, every
-enthalpy, entropy and free-energy key is absent from the property bags, `/flash` reports no
+enthalpy, entropy and free-energy key is absent from the property bags, **every stream that is
+not a feed has `temperatureC: null`** and every unit op has `outletTemperatureC: null` (an
+enthalpy balance computed them — a heater on a duty, a mixer, a compressor), `/flash` reports no
 `enthalpyKJKg`/`entropyKJKgK`, a `PH` or `PS` flash is refused, and the response carries
-`SOLID_ENTHALPY_UNMEASURED` in `warnings`. The mass balance and the phase split are reported.
+`SOLID_ENTHALPY_UNMEASURED` in `warnings`. A feed's temperature was stated by the caller and
+stays. Compositions, phases, flows and pressures are reported.
 
 **Not measured, so not promised:** whether any setting keeps a defined solid out of a coexisting
 liquid; whether a vaporisation-enthalpy correlation evaluating to zero would make the solid's

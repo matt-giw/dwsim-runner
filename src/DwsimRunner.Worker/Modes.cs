@@ -251,11 +251,7 @@ static class Modes
         var sw = Stopwatch.StartNew();
         var auto = new Automation3();
 
-        var flow = FlowsheetBuilder.ParseDocument(doc);
-        var (fs, build, warnings) = FlowsheetBuilder.Build(auto, flow);
-        // Build has already refused anything wrong with the definitions; this only re-reads the names.
-        var solids = CompoundDefinitions.SolidNames(
-            CompoundDefinitions.Parse(flow.CompoundDefinitions, flow.Compounds ?? [], []));
+        var (fs, build, warnings) = FlowsheetBuilder.Build(auto, FlowsheetBuilder.ParseDocument(doc));
 
         // 120 US5 — document-scoped /compare and /optimize cases: the same per-case
         // overrides the template path applies, via the same shared helper (drift is how a
@@ -300,18 +296,7 @@ static class Modes
 
         engineWarnings.AddRange(warnings.Select(w => $"[{w.Code}] {w.Message}"));
 
-        // 281 — the allowlist is the promise; this is the check. A defined solid that still came back
-        // in a fluid phase is REFUSED: the caller never receives a payload carrying the mislabel.
-        var solidIssues = streams.SelectMany(s => SolidsCheck.SolidInFluid(s.Name, PhasesOf(s), solids)).ToList();
-        if (solidIssues.Count > 0)
-            throw new BuildAbortException("SOLID_REPORTED_AS_FLUID",
-                "the engine reported a defined solid in a fluid phase", solidIssues);
-        engineWarnings.AddRange(MeltingPointWarnings(fs, streams, solids));
-        if (solids.Count > 0)
-        {
-            (streams, energy, unitOps) = WithoutEnergy(streams, energy, unitOps);
-            engineWarnings.Add(SolidsCheck.EnergyWarning);
-        }
+        (streams, energy, unitOps) = ApplySolidsRules(fs, streams, energy, unitOps, engineWarnings);
 
         // ── optional save (T037) ─────────────────────────────────────────────
         // Conflict/overwrite policy and listing metadata (sidecar, template
@@ -372,28 +357,49 @@ static class Modes
         return (streams, energy, unitOps);
     }
 
-    /// <summary>281 (T009) — every energy-bearing number off a solve that defines a solid. See SolidsCheck.EnergyWarning.</summary>
-    internal static (List<StreamRow>, List<EnergyRow>, List<UnitOpRow>) WithoutEnergy(
-        List<StreamRow> streams, List<EnergyRow> energy, List<UnitOpRow> unitOps) =>
-        (streams.Select(s => s with
+    /// <summary>
+    /// 281 — everything a solved flowsheet's result must obey about solids, in ONE place for BOTH solve
+    /// paths (document and template; review of #34 found the template path running without it):
+    ///   1. a solid the flowsheet carries that came back in a fluid phase REFUSES the result, with the
+    ///      engine's own warnings attached so a non-convergence is not hidden behind the refusal;
+    ///   2. a liquid phase that is mostly an ordinary compound below its melting point is warned;
+    ///   3. with any solid present, every energy result and every COMPUTED temperature is withheld
+    ///      (T009: the solid's enthalpy follows the placeholders, and an enthalpy balance — a heater on
+    ///      a duty, a mixer, a compressor — computes a temperature from it). A feed's temperature was
+    ///      stated by the caller and stays; a feed is a material stream nothing feeds.
+    /// </summary>
+    internal static (List<StreamRow>, List<EnergyRow>, List<UnitOpRow>) ApplySolidsRules(
+        IFlowsheet fs, List<StreamRow> streams, List<EnergyRow> energy, List<UnitOpRow> unitOps, List<string> warnings)
+    {
+        var solids = CompoundDefinitions.SolidsOf(fs);
+        var solidIssues = streams.SelectMany(s => SolidsCheck.SolidInFluid(s.Name, PhasesOf(s), solids)).ToList();
+        if (solidIssues.Count > 0)
+            throw new BuildAbortException("SOLID_REPORTED_AS_FLUID",
+                "the engine reported a defined solid in a fluid phase",
+                [.. solidIssues, .. warnings.Select(w => new BuildIssue("warning", "ENGINE", null, null, w))]);
+
+        var meltingPointK = CompoundDefinitions.MeltingPoints(fs);
+        warnings.AddRange(streams.SelectMany(s => SolidsCheck.BelowMeltingPoint(s.Name, s.TemperatureC, PhasesOf(s), meltingPointK, solids)));
+        if (solids.Count == 0) return (streams, energy, unitOps);
+
+        var feeds = new HashSet<string>(fs.SimulationObjects.Values
+            .OfType<DWSIM.Thermodynamics.Streams.MaterialStream>()
+            .Where(ms => ms.GraphicObject?.InputConnectors is not { Count: > 0 } ins || !ins[0].IsAttached)
+            .Select(ms => ms.GraphicObject.Tag), StringComparer.Ordinal);
+        warnings.Add(SolidsCheck.EnergyWarning);
+        return (
+            streams.Select(s => s with
             {
+                TemperatureC = feeds.Contains(s.Name) ? s.TemperatureC : null,
                 Properties = SolidsCheck.WithoutEnergy(s.Properties),
                 Phases = s.Phases?.Select(p => p with { Properties = SolidsCheck.WithoutEnergy(p.Properties) }).ToList(),
             }).ToList(),
-         energy.Select(e => e with { DutyKw = null }).ToList(),
-         unitOps.Select(u => u with { PowerKw = null, DutyKw = null }).ToList());
+            energy.Select(e => e with { DutyKw = null }).ToList(),
+            unitOps.Select(u => u with { PowerKw = null, DutyKw = null, OutletTemperatureC = null }).ToList());
+    }
 
     private static IEnumerable<(string Phase, IReadOnlyDictionary<string, double>? Composition)> PhasesOf(StreamRow s) =>
         (s.Phases ?? []).Select(p => (p.Name, (IReadOnlyDictionary<string, double>?)p.Composition));
-
-    /// <summary>281 — shared by BOTH solve paths (template and document), so a warning cannot depend
-    /// on which entry point ran (Hazard 7).</summary>
-    internal static List<string> MeltingPointWarnings(IFlowsheet fs, List<StreamRow> streams, IReadOnlySet<string> solids)
-    {
-        var meltingPointK = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, c) in fs.SelectedCompounds) meltingPointK[name] = c.TemperatureOfFusion;
-        return streams.SelectMany(s => SolidsCheck.BelowMeltingPoint(s.Name, s.TemperatureC, PhasesOf(s), meltingPointK, solids)).ToList();
-    }
 
     internal static StreamRow HarvestStream(DWSIM.Thermodynamics.Streams.MaterialStream ms)
     {
@@ -609,9 +615,7 @@ static class Modes
         fs.CreateAndAddPropertyPackage(ppName);
         CompoundDefinitions.ApplySolidsSetting(fs, solids, ppName);
         var package = fs.PropertyPackages.Values.First();
-        var meltingPointK = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, c) in fs.SelectedCompounds) meltingPointK[name] = c.TemperatureOfFusion;
-        var solidsContext = new SolidsContext(solids, meltingPointK);
+        var solidsContext = new SolidsContext(solids, CompoundDefinitions.MeltingPoints(fs));
 
         // CalculateEquilibrium2 pulls the feed composition from the package's
         // CurrentMaterialStream (RET_VMOL) — a bare package NREs. Feed it a

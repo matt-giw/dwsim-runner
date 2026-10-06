@@ -280,9 +280,9 @@ static class Solver
         // a template solve reports cannot differ from a document solve's for the same flowsheet.
         var (streams, energy, unitOps) = Modes.Harvest(fs);
 
-        // 281 — a template carries no compound definitions, so there is no solid to guard; the
-        // melting-point warning still applies, through the helper build-solve uses.
-        warnings.AddRange(Modes.MeltingPointWarnings(fs, streams, new HashSet<string>()));
+        // 281 — a template CAN carry a defined solid (a build-solve saved with one writes it into the
+        // .dwxmz), so the same rules as build-solve apply, through the same function.
+        (streams, energy, unitOps) = Modes.ApplySolidsRules(fs, streams, energy, unitOps, warnings);
 
         return new SolveResult(converged, sw.ElapsedMilliseconds, streams, energy, unitOps, warnings,
                                PropertyUnits: PhaseProperties.UnitsForResponse());

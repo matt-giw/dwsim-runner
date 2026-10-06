@@ -184,6 +184,7 @@ public class SolidsTests
         var without = await Flash("RAOULT", 701, new() { ["Iron"] = 0.5, ["Water"] = 0.5 });
         var body = await Body(without);
         Assert.Equal(HttpStatusCode.BadRequest, without.StatusCode);
+        Assert.Equal("FLASH_INVALID", body.GetProperty("error").GetString());
         Assert.Contains("'Iron' not found", body.GetProperty("message").GetString());
     }
 
@@ -206,8 +207,9 @@ public class SolidsTests
 
         // No definitions anywhere in this test: the warning is for ordinary engine compounds.
         var inWater = await Body(await Flash("PR", 25, new() { ["Naphthalene"] = 0.5, ["Water"] = 0.5 }));
-        var warning = Assert.Single(inWater.GetProperty("warnings").EnumerateArray().Select(w => w.GetString()!));
-        Assert.Contains("BELOW_MELTING_POINT_AS_LIQUID", warning);
+        // Contains, not Single: the API appends its own entry to `warnings` on an unsupported engine build.
+        var warning = Assert.Single(inWater.GetProperty("warnings").EnumerateArray().Select(w => w.GetString()!)
+            .Where(w => w.Contains("BELOW_MELTING_POINT_AS_LIQUID")));
         Assert.Contains("Naphthalene", warning);
         // The numbers are untouched: the warning changes no result (SC-010).
         Assert.InRange(Phases(inWater)["Liquid"].Composition["Naphthalene"], 0.93, 0.95);
@@ -266,6 +268,103 @@ public class SolidsTests
         Assert.InRange(solid.GetProperty("composition").GetProperty("Iron").GetDouble(), 0.999, 1.001);
         foreach (var p in phases.Where(p => p.GetProperty("name").GetString() != "solid"))
             Assert.True(!p.GetProperty("composition").TryGetProperty("Iron", out var fe) || fe.GetDouble() < 1e-6, body.ToString());
+    }
+
+    /// <summary>FEED (iron + steam) → heater → OUT, as a document object graph; the heater on an outlet
+    /// temperature by default, or on a duty.</summary>
+    private static Dictionary<string, object?> HeaterDocGraph(double feedC, bool onDuty = false) => new()
+    {
+        ["schemaVersion"] = 1,
+        ["name"] = "281 solids heater",
+        ["compounds"] = new[] { "Iron", "Water" },
+        ["propertyPackage"] = "RAOULT",
+        ["compoundDefinitions"] = new[] { Iron },
+        ["objects"] = new object[]
+        {
+            new { tag = "FEED", kind = "materialStream", spec = new {
+                temperature = Q(feedC, "C"), pressure = Q(1, "bar"), massFlow = Q(100, "kg/h"),
+                composition = new { basis = "molar", fractions = new Dictionary<string, double> { ["Iron"] = 0.5, ["Water"] = 0.5 } } } },
+            new { tag = "H-1", kind = "unitOp", type = "heater",
+                  parameters = onDuty ? (object)new { heatDuty = Q(50, "kW") } : new { outletTemperature = Q(700, "C") } },
+            new { tag = "OUT", kind = "materialStream" },
+        },
+        ["connections"] = new[] { new { from = "FEED", to = "H-1", port = "Inlet" }, new { from = "H-1", to = "OUT", port = "Outlet" } },
+    };
+
+    private static StringContent BuildSolveBody(Dictionary<string, object?> document, string? saveAsTemplateId = null) =>
+        new(JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["document"] = document,
+            ["timeoutSeconds"] = 120,
+            ["saveAsTemplate"] = saveAsTemplateId is null ? null : new { id = saveAsTemplateId },
+        }), System.Text.Encoding.UTF8, "application/json");
+
+    private static bool Absent(JsonElement el, string property) =>
+        !el.TryGetProperty(property, out var v) || v.ValueKind == JsonValueKind.Null;
+
+    [SkippableFact]
+    public async Task A_heater_on_a_duty_over_a_solid_is_refused_because_its_outlet_flash_melts_the_iron()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        // Measured 2026-10-05: with the outlet found by an enthalpy balance (a PH flash over the
+        // placeholder enthalpy), the engine returns the iron as a LIQUID. The guard refuses it, naming
+        // the stream — the right answer: an energy balance over a defined solid is not supported.
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve", BuildSolveBody(HeaterDocGraph(600, onDuty: true)));
+        var body = await Body(resp);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
+        Assert.Equal("SOLID_REPORTED_AS_FLUID", body.GetProperty("error").GetString());
+        Assert.Contains(body.GetProperty("issues").EnumerateArray(), i => i.GetProperty("tag").GetString() == "OUT");
+    }
+
+    [SkippableFact]
+    public async Task A_computed_temperature_is_withheld_with_a_solid_present_and_a_feeds_is_kept()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        // Every stream that is not a feed had its temperature computed by the engine; with a solid
+        // present that number rests on the placeholder enthalpy (T009), so it is withheld — even
+        // here, where it equals the heater's own setpoint. The feed's was stated by the caller: kept.
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve", BuildSolveBody(HeaterDocGraph(600)));
+        var body = await Body(resp);
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, body.ToString());
+        var streams = body.GetProperty("streams").EnumerateArray().ToDictionary(s => s.GetProperty("name").GetString()!);
+        Assert.InRange(streams["FEED"].GetProperty("temperatureC").GetDouble(), 599.9, 600.1);
+        Assert.True(Absent(streams["OUT"], "temperatureC"), body.ToString());
+        var heater = body.GetProperty("unitOps").EnumerateArray().Single(u => u.GetProperty("name").GetString() == "H-1");
+        Assert.True(Absent(heater, "dutyKw") && Absent(heater, "outletTemperatureC"), body.ToString());
+        Assert.Contains(body.GetProperty("warnings").EnumerateArray().Select(w => w.GetString()!), w => w.Contains("SOLID_ENTHALPY_UNMEASURED"));
+    }
+
+    [SkippableFact]
+    public async Task A_template_saved_with_a_defined_solid_obeys_the_same_rules_when_solved_again()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        // Review of #34: the .dwxmz keeps the solid, and the template path used to run without the guard.
+        var id = $"solids-{Guid.NewGuid():N}";
+        var save = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve", BuildSolveBody(HeaterDocGraph(600), id));
+        var saved = await Body(save);
+        Skip.If(save.StatusCode != HttpStatusCode.OK
+                || !(saved.TryGetProperty("template", out var t) && t.TryGetProperty("saved", out var ok) && ok.GetBoolean()),
+            "no writable user-template store on this runner: " + saved);
+        try
+        {
+            // Re-solved from the template with the feed cooled to 25 C: 0.95 % of the iron would sit in
+            // liquid water, which the document path refuses — so must this one.
+            var resp = await RunnerConnection.Client.PostAsJsonAsync("/solve", new
+            {
+                templateId = id,
+                overrides = new[] { new { @object = "FEED", property = "Temperature", value = 298.15, unit = "K" } },
+            });
+            var body = await Body(resp);
+            Assert.True(resp.StatusCode == HttpStatusCode.UnprocessableEntity, body.ToString());
+            Assert.Equal("SOLID_REPORTED_AS_FLUID", body.GetProperty("error").GetString());
+        }
+        finally
+        {
+            await RunnerConnection.Client.DeleteAsync($"/templates/{id}");
+        }
     }
 
     [SkippableFact]
