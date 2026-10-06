@@ -188,6 +188,27 @@ public class ReaderTests
     }
 
     [Fact]
+    public void An_out_of_range_vapour_fraction_is_kept_as_the_file_holds_it_and_warned_about()
+    {
+        // #33 review — geothermal.dwxmz's evaporator holds 20. Emit what the file holds (the engine's
+        // flash saturated it at 1), but never as a silent specification: a warning names tag and value.
+        // The cooler's pre-existing read has the same gap, so the check runs on whatever was read.
+        var warnings = new List<string>();
+        var heater = Reader.ReadParameters(new Heater { CalcMode = Heater.CalculationMode.OutletVaporFraction, OutletVaporFraction = 20 }, UnitOpCatalog.Types["heater"], out _);
+        Reader.WarnOutOfRangeFractions("evaporator ", heater, warnings);
+        var cooler = Reader.ReadParameters(new Cooler { CalcMode = Cooler.CalculationMode.OutletVaporFraction, OutletVaporFraction = -0.5 }, UnitOpCatalog.Types["cooler"], out _);
+        Reader.WarnOutOfRangeFractions("COND", cooler, warnings);
+        var ok = Reader.ReadParameters(new Heater { CalcMode = Heater.CalculationMode.OutletVaporFraction, OutletVaporFraction = 1 }, UnitOpCatalog.Types["heater"], out _);
+        Reader.WarnOutOfRangeFractions("boiler", ok, warnings);
+
+        Assert.Equal(20, (double)heater["outletVaporFraction"]!, 6);
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains("'evaporator '", warnings[0]);
+        Assert.Contains("20", warnings[0]);
+        Assert.Contains("'COND'", warnings[1]);
+    }
+
+    [Fact]
     public void A_collapsed_mode_reads_back_as_its_survivor()
     {
         var heater = new Heater { CalcMode = Heater.CalculationMode.HeatAddedRemoved };
