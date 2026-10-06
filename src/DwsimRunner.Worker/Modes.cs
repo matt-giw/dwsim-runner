@@ -19,6 +19,9 @@ namespace DwsimRunner.Worker;
 
 static class Modes
 {
+    /// <summary>An energy stream's duty as the engine holds it (DWSIM SI energy flow is kW); not finite → null.</summary>
+    internal static double? EnergyFlowKw(double? ef) => ef is double v && double.IsFinite(v) ? v : null;
+
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     // ── catalog (T009) ───────────────────────────────────────────────────────
@@ -342,7 +345,7 @@ static class Modes
                     if (ElectrolyzerConfigurator.IsSynthesizedPower(es.GraphicObject.Tag)) break;
                     energy.Add(new EnergyRow(es.GraphicObject.Tag,
                         // DWSIM SI energy flow is already kW
-                        es.EnergyFlow is double ef && double.IsFinite(ef) ? Math.Round(ef, 1) : null));
+                        EnergyFlowKw(es.EnergyFlow)));
                     break;
                 default:  // equipment-level results for downstream sizing (FR-015)
                     unitOps.Add(HarvestUnitOp(obj));
