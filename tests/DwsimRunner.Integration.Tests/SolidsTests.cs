@@ -367,6 +367,53 @@ public class SolidsTests
         }
     }
 
+    /// <summary>3 Fe + 4 H2O → Fe3O4 + 4 H2 in an equilibrium reactor at 700 °C — iskra 281 US3.</summary>
+    private static Dictionary<string, object?> IronSteamReactorDoc() => new()
+    {
+        ["schemaVersion"] = 1,
+        ["name"] = "281 iron-steam",
+        ["compounds"] = new[] { "Iron", "Water", "Magnetite", "Hydrogen" },
+        ["propertyPackage"] = "RAOULT",
+        ["compoundDefinitions"] = new[] { Iron, Magnetite },
+        ["objects"] = new object[]
+        {
+            new { tag = "FEED", kind = "materialStream", spec = new {
+                temperature = Q(700, "C"), pressure = Q(1, "bar"), molarFlow = Q(100, "kmol/h"),
+                composition = new { basis = "molar", fractions = new Dictionary<string, double> { ["Iron"] = 0.3, ["Water"] = 0.4, ["Magnetite"] = 0.1, ["Hydrogen"] = 0.2 } } } },
+            new { tag = "R-1", kind = "unitOp", type = "reactorEquilibrium", parameters = new { outletTemperature = Q(700, "C") } },
+            new { tag = "OUT_V", kind = "materialStream" },
+            new { tag = "OUT_L", kind = "materialStream" },
+            new { tag = "Q-RX", kind = "energyStream" },
+        },
+        ["connections"] = new[]
+        {
+            new { from = "FEED", to = "R-1", port = "Inlet" }, new { from = "R-1", to = "OUT_V", port = "Vapor Outlet" },
+            new { from = "R-1", to = "OUT_L", port = "Liquid Outlet" }, new { from = "Q-RX", to = "R-1", port = "Energy Inlet" },
+        },
+        ["reactions"] = new[] { new {
+            tag = "RX-1", type = "equilibrium", basis = "molar", phase = "Vapor",
+            stoichiometry = new Dictionary<string, double> { ["Iron"] = -3, ["Water"] = -4, ["Magnetite"] = 1, ["Hydrogen"] = 4 },
+            baseCompound = "Iron", equilibriumConstantSource = "Gibbs Energy", temperature = 973.15 } },
+        ["reactionSets"] = new[] { new { tag = "RS-1", reactions = new[] { "RX-1" }, attachTo = new[] { "R-1" } } },
+    };
+
+    [SkippableFact]
+    public async Task The_iron_steam_equilibrium_reactor_is_refused_because_its_solid_outlet_comes_back_unresolved()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        // Measured 2026-10-05: the reactor CONVERGES, the vapour outlet is a real stream, and the
+        // liquid outlet carries the solids' whole mass (the balance closes) with no composition and
+        // no phase. A converged answer with 4,100 kg/h of nothing in it is the class this runner
+        // refuses by name. Until the engine resolves that outlet, iskra 281 US3 is this refusal.
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve", BuildSolveBody(IronSteamReactorDoc()));
+        var body = await Body(resp);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
+        Assert.Equal("SOLID_STREAM_UNRESOLVED", body.GetProperty("error").GetString());
+        var issue = body.GetProperty("issues").EnumerateArray().Single(i => i.GetProperty("code").GetString() == "SOLID_STREAM_UNRESOLVED");
+        Assert.Equal("OUT_L", issue.GetProperty("tag").GetString());
+    }
+
     [SkippableFact]
     public async Task A_solved_document_whose_solid_ends_up_in_a_liquid_is_refused_naming_the_stream()
     {
