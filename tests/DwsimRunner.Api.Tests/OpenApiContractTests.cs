@@ -42,6 +42,7 @@ public class OpenApiContractTests
         "/catalog/property-packages",
         "/catalog/unit-op-types",
         "/catalog/engine-inventory",
+        "/catalog/solids",
         "/catalog/units",
         "/flowsheets/validate",
         "/flowsheets/build-solve",

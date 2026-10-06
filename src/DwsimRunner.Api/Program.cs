@@ -550,6 +550,14 @@ app.MapGet("/catalog/engine-inventory", (CancellationToken ct) => CatalogSection
     .WithDescription("An exposedAs of null means DWSIM has the unit op and this runner has no wire type for it.")
     .Produces<EngineInventoryResponse>(StatusCodes.Status200OK)
     .Produces<ErrorResponse>(StatusCodes.Status503ServiceUnavailable);
+// 281 — what a caller needs to send a solid: the packages measured to keep it solid, and the
+// values (with units) a definition must carry. A projection of the catalog payload, like the above.
+app.MapGet("/catalog/solids", (CancellationToken ct) => CatalogSection("solids", ct))
+    .WithTags("Catalog")
+    .WithSummary("Which packages a defined solid may be solved under, and what a solid definition must carry.")
+    .WithDescription("Served from the tables that enforce it: a package absent here is refused with SOLIDS_UNSUPPORTED_PACKAGE.")
+    .Produces<SolidsResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status503ServiceUnavailable);
 // The unit vocabulary this runner ACCEPTS. Served straight from `DocumentValidator` rather than
 // through the worker catalog, because that dictionary is the thing that accepts or rejects a unit —
 // anything else would be a second opinion about the first — and the worker cannot see this assembly.

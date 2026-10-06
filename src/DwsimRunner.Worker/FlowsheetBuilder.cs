@@ -22,7 +22,10 @@ public sealed class BuildAbortException(string code, string message, List<BuildI
 
 public sealed record FlowDoc(int SchemaVersion, string? Name, List<string> Compounds, string PropertyPackage,
     List<FlowObject> Objects, List<FlowConnection>? Connections,
-    List<FlowReaction>? Reactions, List<FlowReactionSet>? ReactionSets);
+    List<FlowReaction>? Reactions, List<FlowReactionSet>? ReactionSets,
+    // 281 — compounds the engine does not ship, defined on the request. Kept raw: CompoundDefinitions
+    // parses it collect-all, so a bad definition is a NAMED issue rather than a JsonException.
+    JsonElement? CompoundDefinitions = null);
 public sealed record FlowObject(string Tag, string Kind, string? Type,
     FlowStreamSpec? Spec, Dictionary<string, JsonElement>? Parameters, FlowPosition? Position);
 public sealed record FlowPosition(int X, int Y);
@@ -106,6 +109,13 @@ public static class FlowsheetBuilder
         void Warn(string code, string? tag, string message) =>
             issues.Add(new BuildIssue("warning", code, tag, null, message));
 
+        // ── compound definitions (281) ─────────────────────────────────────
+        // BEFORE CreateFlowsheet: the flowsheet inherits the instance's compound table as it is
+        // created — that is the path measured on 2026-10-04, and the only one.
+        var definitions = CompoundDefinitions.Parse(doc.CompoundDefinitions, doc.Compounds ?? [], issues);
+        CompoundDefinitions.Register(auto, definitions, issues);
+        var solids = CompoundDefinitions.SolidNames(definitions);
+
         var fs = auto.CreateFlowsheet()
                  ?? throw new WorkerInputException("WORKER_CRASH", "engine failed to create a flowsheet");
 
@@ -131,12 +141,21 @@ public static class FlowsheetBuilder
             Error("UNKNOWN_PROPERTY_PACKAGE", null,
                 Engine.UnknownPackageMessage(doc.PropertyPackage, engineNames), "propertyPackage");
 
+        // 281 — a defined solid is solved only under a package MEASURED to place it in a solid
+        // phase. Refused here, before the solve: an unmeasured package converges with the solid
+        // reported as a liquid, which is the defect this whole path exists to end.
+        if (CompoundDefinitions.SolidsRefusal(solids, packageName) is { } solidsRefusal)
+            Error("SOLIDS_UNSUPPORTED_PACKAGE", null, solidsRefusal, "propertyPackage");
+
         if (issues.Any(i => i.Severity == "error"))
             throw new BuildAbortException(
-                issues.Any(i => i.Code == "UNKNOWN_COMPOUND") ? "UNKNOWN_COMPOUND" : "BUILD_FAILED",
+                // The definition codes win: each names exactly what to fix, where BUILD_FAILED does not.
+                issues.FirstOrDefault(i => i.Severity == "error" && CompoundDefinitions.Codes.Contains(i.Code))?.Code
+                    ?? (issues.Any(i => i.Code == "UNKNOWN_COMPOUND") ? "UNKNOWN_COMPOUND" : "BUILD_FAILED"),
                 "document references unknown engine entities", issues);
 
         fs.CreateAndAddPropertyPackage(packageName!);
+        CompoundDefinitions.ApplySolidsSetting(fs, solids, packageName!);
 
         // ── objects ────────────────────────────────────────────────────────
         var byTag = new Dictionary<string, ISimulationObject>(StringComparer.Ordinal);
