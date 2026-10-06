@@ -280,20 +280,21 @@ public static class UnitOpCatalog
         Consumes: new() {
             ["heatAdded"] = ["heatDuty"], ["outletTemperature"] = ["outletTemperature"],
             ["temperatureChange"] = ["temperatureChange"],
-            // `outletVaporFraction` is on the heater's ENUM and the property is not on the class —
-            // unreachable by construction, so there is nothing to consume. The COOLER has both.
-            ["outletVaporFraction"] = [], ["energyStream"] = [],
+            // iskra 285 (ISK-485, GP-19 probe on DWSIM 9.0.5): `Heater.OutletVaporFraction`
+            // (m_VFout) exists and drives the PVF flash in this mode — 099/200 recorded it absent.
+            ["outletVaporFraction"] = ["outletVaporFraction"], ["energyStream"] = [],
             ["heatAddedRemoved"] = ["heatDuty"],
         },
-        Infer: [("outletTemperature", "outletTemperature"), ("temperatureChange", "temperatureChange"),
-                ("heatDuty", "heatAdded")],
+        // iskra 285 — inferred like the cooler's. MEASURED without this rule: a document stating only
+        // `outletVaporFraction` resolves no mode, the value is written, and the engine — in its
+        // default mode — ignores it (outlet VF 0, no warning): 099's silently inert parameter. With
+        // it the value selects its mode; an EXPLICIT other mode plus the value is refused by name.
+        Infer: [("outletTemperature", "outletTemperature"), ("outletVaporFraction", "outletVaporFraction"),
+                ("temperatureChange", "temperatureChange"), ("heatDuty", "heatAdded")],
         // The one confirmed alias. Ordinal 5 jumps to ordinal 0's `Calculate` branch, the behavioural
         // harness measures them identical at two settings, and DWSIM's GUI shows a single item
         // labelled "Heat Added/Removed" where the enum has two members. A heater offers 5, not 6.
-        Aliases: new() { ["heatAddedRemoved"] = "heatAdded" },
-        // Two causes, two sentences. `outletVaporFraction` is on the HEATER's enum and the property
-        // is on the COOLER's class only — the catalog has recorded that asymmetry since 099.
-        Undrivable: new() { ["outletVaporFraction"] = "this unit op has no such input — the mode is on the engine's enum and the property is not on the class" });
+        Aliases: new() { ["heatAddedRemoved"] = "heatAdded" });
 
     private static readonly CalcModeDef CoolerModes = new(
         "CalcMode", typeof(DWSIM.UnitOperations.UnitOperations.Cooler.CalculationMode),
@@ -431,7 +432,9 @@ public static class UnitOpCatalog
              P("outletTemperature", "temperature", false, "OutletTemperature"),
              P("heatDuty", "power", false, "DeltaQ"),
              P("pressureDrop", "pressure", false, "DeltaP"),
-             P("efficiency", "dimensionless", false, "Eficiencia", "Efficiency")], false, CalcMode: HeaterModes),
+             P("efficiency", "dimensionless", false, "Eficiencia", "Efficiency"),
+             // iskra 285 — a MOLE fraction (0..1), handed raw to the PVF flash in this mode.
+             P("outletVaporFraction", "dimensionless", false, "OutletVaporFraction")], false, CalcMode: HeaterModes),
 
         new UnitOpDef("cooler", "Cooler", ObjectType.Cooler,
             [In("Inlet", 0), Out("Outlet", 0), EnergyOut("Energy Outlet", 1)],

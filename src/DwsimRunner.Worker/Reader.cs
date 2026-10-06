@@ -205,6 +205,7 @@ internal static partial class Reader
                 else
                 {
                     parameters = ReadParameters(so, def, out var mode);
+                    WarnOutOfRangeFractions(tag, parameters, warnings);
                     unitModes[tag] = mode;
                     (wired, detail) = MapPorts(go!, def, tags);
                 }
@@ -488,6 +489,21 @@ internal static partial class Reader
     /// only what that mode reads — a heater in outletTemperature mode holds a DeltaQ, and that DeltaQ
     /// is a result.
     /// </summary>
+    /// <summary>
+    /// #33 review — a vapour fraction outside 0..1 is emitted as the file holds it (the engine's flash
+    /// saturates it), never as a silent specification: one warning names the tag and the value. Runs
+    /// on whatever was read, so the cooler's (and the exchanger's) reads are covered too.
+    /// </summary>
+    internal static void WarnOutOfRangeFractions(string tag, JsonObject parameters, List<string> warnings)
+    {
+        foreach (var (name, node) in parameters)
+        {
+            if (!name.Contains("VaporFraction", StringComparison.Ordinal) || node is not JsonValue v || !v.TryGetValue(out double f)) continue;
+            if (f < 0 || f > 1)
+                warnings.Add($"'{tag}' states {name} = {f.ToString(System.Globalization.CultureInfo.InvariantCulture)}, outside 0..1; kept as the file holds it (the engine's flash bounds it)");
+        }
+    }
+
     internal static JsonObject ReadParameters(ISimulationObject so, UnitOpDef def, out string? mode)
     {
         var bag = new JsonObject();
@@ -531,6 +547,7 @@ internal static partial class Reader
                 _ => v,
             };
         }
+
         return bag;
     }
 
