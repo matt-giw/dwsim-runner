@@ -238,8 +238,20 @@ public sealed record CompoundDefinitionRequest(
 /// This runner's wire type, or null when DWSIM has the unit op and this runner has no type for
 /// it — an absent capability that says so, rather than a silent omission.
 /// </param>
+/// <param name="Connectors">
+/// iskra 316 — the ports the engine gives this type, read off a constructed object (an external
+/// op's own <c>CreateConnectors()</c> is called first). <c>side</c> is "in", "out" or "energy" (the
+/// dedicated energy connector, <c>index</c> -1); <c>index</c> is the slot a catalog port names;
+/// <c>kind</c> is material or energy. Null when the object could not be read. Present for exposed and
+/// unexposed types alike, so an unexposed unit's shape is a fact of the inventory rather than a guess
+/// made when its catalog entry is written.
+/// </param>
 public sealed record EngineInventoryEntryResponse(
-    string Name, string DisplayName, string Source, bool Instantiable, string? ExposedAs);
+    string Name, string DisplayName, string Source, bool Instantiable, string? ExposedAs,
+    List<EngineConnectorResponse>? Connectors);
+
+/// <summary>One connector of an engine unit-op type. See <see cref="EngineInventoryEntryResponse"/>.</summary>
+public sealed record EngineConnectorResponse(string Side, int Index, string Kind, string? Name);
 
 /// <summary>
 /// The unit vocabulary this runner ACCEPTS, keyed by quantity kind. Published so a client's

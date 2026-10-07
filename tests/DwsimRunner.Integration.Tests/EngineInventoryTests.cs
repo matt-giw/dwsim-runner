@@ -151,4 +151,75 @@ public class EngineInventoryTests
 
         Assert.DoesNotContain("dwsim", body, StringComparison.OrdinalIgnoreCase);
     }
+
+    // ── iskra 316 — connectors ────────────────────────────────────────────────────────────────────
+
+    private static List<JsonElement> Connectors(JsonElement e) =>
+        e.TryGetProperty("connectors", out var c) && c.ValueKind == JsonValueKind.Array ? c.EnumerateArray().ToList() : [];
+
+    /// The inventory becomes the check on the catalog: every port a catalog entry declares must be a
+    /// connector the engine actually gives that type, by side, index and kind. This is what would have
+    /// told spec 150 the generators' shape without a rebuild.
+    [SkippableFact]
+    public async Task Every_catalog_port_is_a_connector_the_engine_reports()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        var resp = await RunnerConnection.Client.GetAsync("/catalog/unit-op-types");
+        var catalog = JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync())
+            .GetProperty("unitOpTypes").EnumerateArray().ToDictionary(t => t.GetProperty("type").GetString()!);
+        var inventory = Entries(await Inventory()).Where(e => ExposedAs(e) is not null)
+            .ToDictionary(e => ExposedAs(e)!);
+
+        var missing = new List<string>();
+        foreach (var (wire, entry) in inventory)
+        {
+            var connectors = Connectors(entry);
+            if (connectors.Count == 0) continue; // an object the inventory could not read; tested below
+            foreach (var port in catalog[wire].GetProperty("ports").EnumerateArray())
+            {
+                var direction = port.GetProperty("direction").GetString();
+                var accepts = port.GetProperty("accepts").GetString();
+                // Energy ports may sit on the dedicated energy connector rather than an indexed slot
+                // (the heater's secondary energy stream is one), so an energy port matches either.
+                var ok = connectors.Any(c =>
+                    c.GetProperty("kind").GetString() == accepts
+                    && (c.GetProperty("side").GetString() == direction || (accepts == "energy" && c.GetProperty("side").GetString() == "energy")));
+                if (!ok) missing.Add($"{wire}.{port.GetProperty("name").GetString()} ({direction} {accepts})");
+            }
+        }
+        Assert.True(missing.Count == 0, "catalog ports the engine does not report as connectors: " + string.Join("; ", missing));
+    }
+
+    /// The three units spec 316 exposes, with the shapes measured on 2026-10-06.
+    [SkippableTheory]
+    [InlineData("WindTurbine", "windTurbine", 0, 0, 1)]
+    [InlineData("SolarPanel", "solarPanel", 0, 0, 1)]
+    [InlineData("SolidSeparator", "solidsSeparator", 1, 2, 0)]
+    public async Task The_316_units_are_exposed_with_their_measured_connectors(
+        string engineName, string wire, int materialIn, int materialOut, int energyOut)
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        var entry = Entries(await Inventory()).Single(e => e.GetProperty("name").GetString() == engineName);
+        Assert.Equal(wire, ExposedAs(entry));
+        var cs = Connectors(entry);
+        Assert.Equal(materialIn, cs.Count(c => c.GetProperty("side").GetString() == "in" && c.GetProperty("kind").GetString() == "material"));
+        Assert.Equal(materialOut, cs.Count(c => c.GetProperty("side").GetString() == "out" && c.GetProperty("kind").GetString() == "material"));
+        Assert.Equal(energyOut, cs.Count(c => c.GetProperty("side").GetString() == "out" && c.GetProperty("kind").GetString() == "energy"));
+    }
+
+    /// An unexposed unit's shape is a fact of the inventory, not a guess: the fuel cell's ports are
+    /// reported although nothing exposes it (research R1 — it cannot run on this runner).
+    [SkippableFact]
+    public async Task An_unexposed_unit_still_reports_its_connectors()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+
+        var entry = Entries(await Inventory()).Single(e => e.GetProperty("name").GetString() == "PEMFuelCell");
+        Assert.Null(ExposedAs(entry));
+        var names = Connectors(entry).Select(c => c.GetProperty("name").GetString()).ToList();
+        Assert.Contains("Hydrogen-Rich Inlet", names);
+        Assert.Contains("Power Outlet", names);
+    }
 }

@@ -691,10 +691,24 @@ public static class UnitOpCatalog
             [In("Inlet", 0), Out("Outlet", 0)],
             [], false),
 
-        // ── iskra 316 (ISK-581) — the units the engine builds and this runner never listed. Ports are
-        // READ OFF THE CONSTRUCTED OBJECT (engine inventory `connectors`, this branch), not guessed.
-        // Every parameter below binds a property or field reflection can reach; whether the engine
-        // READS it is what the 316 probes measure (GP-19) before the app offers it.
+        // ── iskra 316 (ISK-581) — three units the engine builds that this runner never listed.
+        // Ports are READ OFF THE CONSTRUCTED OBJECT (engine inventory `connectors`), not guessed, and
+        // each parameter below was MEASURED to move the answer before the app offers it (GP-19;
+        // iskra specs/316-expose-engine-unit-ops/research.md R1). Six more units were probed on the
+        // same day and do NOT ship — a catalog entry that cannot solve is the stub 099 forbids; their
+        // verdicts live in the app's exposure ledger.
+        //
+        // The generators have NO material port: their only product is the energy stream, which is
+        // why it is `required: true` — a generator with nowhere to put its answer is a null
+        // dereference inside Calculate, so the runner refuses first.
+        //
+        // The engine's weather fields (`UserDefinedWindSpeed` …) are public FIELDS, not properties;
+        // the binder sets fields too. Each is gated on `UseUserDefinedWeather = true`, because
+        // without it the engine reads "global weather", which this runner does not model.
+        //
+        // `efficiency` and the humidity are PERCENTS on the engine (defaults 80/15 read off the
+        // reference table and confirmed by the 40 → 13.86 kW measurement); the catalog says so in the
+        // parameter description so the app converts its fraction at the mapper, never here.
         new UnitOpDef("windTurbine", "Wind Turbine", ObjectType.WindTurbine,
             [EnergyOut("Power Outlet", 0, required: true)],
             [new ParamDef("windSpeed", "velocity", false, ["UserDefinedWindSpeed"], [new GateDef("UseUserDefinedWeather", true)]),
@@ -713,45 +727,14 @@ public static class UnitOpCatalog
              P("efficiency", "dimensionless", false, "PanelEfficiency"),
              P("numberOfUnits", "integer", false, "NumberOfPanels")], false),
 
-        new UnitOpDef("hydroelectricTurbine", "Hydroelectric Turbine", ObjectType.HydroelectricTurbine,
-            [In("Water Inlet", 0), Out("Water Outlet", 0), EnergyOut("Power Outlet", 0, required: true)],
-            [P("efficiency", "dimensionless", false, "Efficiency"),
-             P("staticHead", "length", false, "StaticHead"),
-             P("velocityHead", "length", false, "VelocityHead"),
-             P("inletVelocity", "velocity", false, "InletVelocity"),
-             P("outletVelocity", "velocity", false, "OutletVelocity")], false),
-
-        new UnitOpDef("pemFuelCell", "PEM Fuel Cell", ObjectType.PEMFuelCell,
-            [In("Hydrogen-Rich Inlet", 0), In("Oxygen-Rich Inlet", 1), Out("Inerts Outlet", 0), EnergyOut("Power Outlet", 1, required: true)],
-            [], false),
-
+        // Outlet 1 is the fluid, Outlet 2 the solid — positional, measured (256.19 kg/h of iron on
+        // Outlet 2 at 100 % efficiency). A liquid slurry is refused by 281's rule before this unit
+        // runs: the engine dissolves part of a defined solid into liquid water, so today this
+        // separates gas from solid. Both efficiencies are PERCENTS on the engine.
         new UnitOpDef("solidsSeparator", "Solids Separator", ObjectType.SolidSeparator,
             [In("Inlet", 0), Out("Outlet 1", 0), Out("Outlet 2", 1)],
             [P("separationEfficiency", "dimensionless", false, "SeparationEfficiency"),
              P("liquidSeparationEfficiency", "dimensionless", false, "LiquidSeparationEfficiency")], false),
-
-        new UnitOpDef("filter", "Filter", ObjectType.Filter,
-            [In("Inlet", 0), Out("Filtrate", 0), Out("Retentate", 1)],
-            [P("pressureDrop", "pressure", false, "PressureDrop"),
-             P("totalFilterArea", "area", false, "TotalFilterArea"),
-             P("submergedAreaFraction", "dimensionless", false, "SubmergedAreaFraction"),
-             P("specificCakeResistance", "dimensionless", false, "SpecificCakeResistance"),
-             P("filterMediumResistance", "dimensionless", false, "FilterMediumResistance"),
-             P("filterCycleTime", "dimensionless", false, "FilterCycleTime"),
-             P("cakeRelativeHumidity", "dimensionless", false, "CakeRelativeHumidity")], false),
-
-        new UnitOpDef("absorptionColumn", "Absorption Column", ObjectType.AbsorptionColumn,
-            [In("Gas Feed", 0), In("Solvent Feed", 1), Out("Top Product", 0), Out("Bottoms Product", 1)],
-            [P("numberOfStages", "integer", true),
-             P("topPressure", "pressure", true),
-             P("bottomPressure", "pressure", true),
-             P("solvingMethod", "string", false),
-             P("maxIterations", "integer", false),
-             P("loopTolerance", "dimensionless", false)], false),
-
-        new UnitOpDef("reactorGibbsReaktoro", "Gibbs Reactor (Reaktoro)", ObjectType.RCT_GibbsReaktoro,
-            [In("Inlet", 0), Out("Outlet", 0), EnergyOut("Heat Outlet", 1)],
-            [], false),
     }.ToDictionary(d => d.Type, d => d, StringComparer.Ordinal);
 
     /// <summary>
@@ -830,6 +813,33 @@ public static class UnitOpCatalog
         "mV" => value * 0.001,
         _ => throw new InvalidOperationException(
             $"'{unit}' is not a voltage unit. Use V, kV or mV."),
+    };
+
+
+    /// <summary>
+    /// iskra 316 — velocity, for the wind turbine. MEASURED (GeneratorUnitTests): whether DWSIM's
+    /// converter has a velocity family is recorded by the test; either way the worker carries its
+    /// own table, voltage's precedent, so an unknown spelling is refused rather than passed through.
+    /// </summary>
+    public static double ConvertVelocity(string unit, double value) => unit switch
+    {
+        "m/s" => value,
+        "km/h" => value / 3.6,
+        "ft/s" => value * 0.3048,
+        _ => throw new InvalidOperationException(
+            $"'{unit}' is not a velocity unit. Use m/s, km/h or ft/s."),
+    };
+
+    /// <summary>
+    /// iskra 316 — irradiance, for the solar panel. The engine stores `SolarIrradiation_kW_m2` in
+    /// kW/m2, NOT the W/m2 an SI conversion would produce, so this scales to the engine's unit.
+    /// </summary>
+    public static double ConvertIrradiance(string unit, double value) => unit switch
+    {
+        "kW/m2" => value,
+        "W/m2" => value * 0.001,
+        _ => throw new InvalidOperationException(
+            $"'{unit}' is not an irradiance unit. Use kW/m2 or W/m2."),
     };
 
     public static object ToPayload() => Types.Values

@@ -29,35 +29,6 @@ internal static class ColumnConfigurator
     public static bool TryConnect(ISimulationObject unitObj, string portName,
         ISimulationObject streamObj, FlowObject unitDoc)
     {
-        // iskra 316 — the absorber is the same Column machinery with no condenser and no reboiler:
-        // gas enters the bottom stage, solvent the top, and the two products are the column's own
-        // top/bottom product hooks. The generic port path does not register a feed with the column
-        // (measured: "One or more of the stream connections to the column is missing"), so it goes
-        // through the column's own connect methods exactly as the rigorous column does.
-        if (unitObj is AbsorptionColumn abs)
-        {
-            switch (portName)
-            {
-                case "Gas Feed":
-                    EnsureStages(abs, unitDoc);
-                    abs.ConnectFeed(streamObj, Math.Max(abs.NumberOfStages - 1, 0));
-                    return true;
-                case "Solvent Feed":
-                    EnsureStages(abs, unitDoc);
-                    abs.ConnectFeed(streamObj, 0);
-                    return true;
-                case "Top Product":
-                    abs.ConnectTopProduct(streamObj);
-                    return true;
-                case "Bottoms Product":
-                    abs.ConnectBottoms(streamObj);
-                    return true;
-                default:
-                    throw new InvalidOperationException(
-                        $"absorptionColumn has no port '{portName}'; valid: Gas Feed, Solvent Feed, Top Product, Bottoms Product");
-            }
-        }
-
         if (unitObj is not DistillationColumn col) return false;
 
         switch (portName)
@@ -86,7 +57,7 @@ internal static class ColumnConfigurator
 
     public static bool Handles(string paramName) => paramName is
         "numberOfStages" or "feedStage" or "refluxRatio" or "distillateMolarFlow"
-        or "bottomsMolarFlow" or "condenserPressure" or "reboilerPressure" or "topPressure" or "bottomPressure" or "loopTolerance"
+        or "bottomsMolarFlow" or "condenserPressure" or "reboilerPressure"
         or "solvingMethod" or "maxIterations";
 
     // ── 143: the solver was never selected ────────────────────────────────
@@ -115,28 +86,6 @@ internal static class ColumnConfigurator
 
     public static void Apply(ISimulationObject column, string paramName, JsonElement raw)
     {
-        // iskra 316 — the absorber's three parameters; stage pressures interpolate in Finish().
-        if (column is AbsorptionColumn abs)
-        {
-            switch (paramName)
-            {
-                case "numberOfStages": SetStageCount(abs, AsInt(raw)); return;
-                case "topPressure": abs.Stages[0].P = ToPa(raw); return;
-                case "bottomPressure": abs.Stages[^1].P = ToPa(raw); return;
-                case "solvingMethod":
-                {
-                    var name = AsString(raw);
-                    if (!Methods.TryGetValue(name, out var engineName))
-                        throw new InvalidOperationException(
-                            $"solvingMethod '{name}' is not a solver this engine has; available: {string.Join(", ", Methods.Keys)}");
-                    abs.SolvingMethodName = engineName;
-                    return;
-                }
-                case "maxIterations": abs.MaxIterations = AsInt(raw); return;
-                case "loopTolerance": abs.ExternalLoopTolerance = AsDouble(raw); abs.InternalLoopTolerance = AsDouble(raw); return;
-                default: throw new InvalidOperationException($"absorptionColumn has no parameter '{paramName}'");
-            }
-        }
         if (column is not DistillationColumn col)
             throw new InvalidOperationException($"'{paramName}' is only supported on distillationColumn");
 
@@ -208,7 +157,7 @@ internal static class ColumnConfigurator
     /// reboiler pressures, and the runner's iteration budget when the document did not state one.</summary>
     public static void Finish(ISimulationObject column, FlowObject unitDoc)
     {
-        if (column is not Column col) return;
+        if (column is not DistillationColumn col) return;
 
         // Applied here rather than at construction so an explicit `maxIterations` always wins —
         // the document is the authority, and a default that overwrote it would be the silent
@@ -238,7 +187,7 @@ internal static class ColumnConfigurator
     private const int MaxIterationsCeiling = 10_000;
     private const int MaxStages = 300;
 
-    private static void SetStageCount(Column col, int n)
+    private static void SetStageCount(DistillationColumn col, int n)
     {
         if (n > MaxStages)
             throw new InvalidOperationException($"numberOfStages is {n}; this runner allows at most {MaxStages}");
@@ -252,7 +201,7 @@ internal static class ColumnConfigurator
 
     // numberOfStages must be applied before ConnectFeed places the feed on a
     // stage — connections run before the parameter pass in the builder.
-    private static void EnsureStages(Column col, FlowObject unitDoc)
+    private static void EnsureStages(DistillationColumn col, FlowObject unitDoc)
     {
         if (unitDoc.Parameters is { } prms && prms.TryGetValue("numberOfStages", out var rawN))
             SetStageCount(col, AsInt(rawN));

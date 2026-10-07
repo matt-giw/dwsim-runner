@@ -563,7 +563,7 @@ public static class FlowsheetBuilder
         JsonElement raw, IReadOnlyCollection<string> compounds,
         Action<string, string?, string, string?> error)   // (code, tag, message, path)
     {
-        if (def.Type is "distillationColumn" or "absorptionColumn" && ColumnConfigurator.Handles(p.Name))
+        if (def.Type is "distillationColumn" && ColumnConfigurator.Handles(p.Name))
         {
             ColumnConfigurator.Apply(so, p.Name, raw);
             return;
@@ -687,6 +687,14 @@ public static class FlowsheetBuilder
                     : je.GetDouble(),
                 JsonValueKind.Number when p.UnitType == "voltage" => unit is { Length: > 0 }
                     ? UnitOpCatalog.ConvertVoltage(unit, je.GetDouble())
+                    : je.GetDouble(),
+                // iskra 316 — the generators' two kinds: velocity has its own table (voltage's
+                // precedent) and irradiance scales to the engine's kW/m2, which is not SI.
+                JsonValueKind.Number when p.UnitType == "velocity" => unit is { Length: > 0 }
+                    ? UnitOpCatalog.ConvertVelocity(unit, je.GetDouble())
+                    : je.GetDouble(),
+                JsonValueKind.Number when p.UnitType == "irradiance" => unit is { Length: > 0 }
+                    ? UnitOpCatalog.ConvertIrradiance(unit, je.GetDouble())
                     : je.GetDouble(),
                 JsonValueKind.Number => unit is { Length: > 0 }
                     ? DWSIM.SharedClasses.SystemsOfUnits.Converter.ConvertToSI(unit, je.GetDouble())

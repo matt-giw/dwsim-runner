@@ -41,6 +41,10 @@ public class ReaderTests
         ["shortcutColumn"] = () => new ShortcutColumn(),
         ["waterElectrolyzer"] = () => new WaterElectrolyzer(),
         ["recycle"] = () => new DWSIM.UnitOperations.SpecialOps.Recycle(),
+        // iskra 316
+        ["windTurbine"] = () => new WindTurbine(),
+        ["solarPanel"] = () => new SolarPanel(),
+        ["solidsSeparator"] = () => new SolidsSeparator(),
     };
 
     // A distinct value per unit type, deliberately NOT the engine default, so an emitted default
@@ -58,6 +62,8 @@ public class ReaderTests
         "volume" => """{"value":1.5,"unit":"m3"}""",
         "heatTransferCoefficient" => """{"value":250.0,"unit":"W/[m2.K]"}""",
         "voltage" => """{"value":500.0,"unit":"V"}""",
+        "velocity" => """{"value":7.5,"unit":"m/s"}""",
+        "irradiance" => """{"value":0.85,"unit":"kW/m2"}""",
         "integer" => "7",
         "string" => "\"Methane\"",
         _ => "0.37",
