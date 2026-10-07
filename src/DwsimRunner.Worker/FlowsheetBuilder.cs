@@ -563,7 +563,7 @@ public static class FlowsheetBuilder
         JsonElement raw, IReadOnlyCollection<string> compounds,
         Action<string, string?, string, string?> error)   // (code, tag, message, path)
     {
-        if (def.Type is "distillationColumn" && ColumnConfigurator.Handles(p.Name))
+        if (def.Type is "distillationColumn" or "absorptionColumn" && ColumnConfigurator.Handles(p.Name))
         {
             ColumnConfigurator.Apply(so, p.Name, raw);
             return;

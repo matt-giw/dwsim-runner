@@ -690,6 +690,68 @@ public static class UnitOpCatalog
         new UnitOpDef("recycle", "Recycle", ObjectType.OT_Recycle,
             [In("Inlet", 0), Out("Outlet", 0)],
             [], false),
+
+        // ── iskra 316 (ISK-581) — the units the engine builds and this runner never listed. Ports are
+        // READ OFF THE CONSTRUCTED OBJECT (engine inventory `connectors`, this branch), not guessed.
+        // Every parameter below binds a property or field reflection can reach; whether the engine
+        // READS it is what the 316 probes measure (GP-19) before the app offers it.
+        new UnitOpDef("windTurbine", "Wind Turbine", ObjectType.WindTurbine,
+            [EnergyOut("Power Outlet", 0, required: true)],
+            [new ParamDef("windSpeed", "velocity", false, ["UserDefinedWindSpeed"], [new GateDef("UseUserDefinedWeather", true)]),
+             new ParamDef("airTemperature", "temperature", false, ["UserDefinedAirTemperature"], [new GateDef("UseUserDefinedWeather", true)]),
+             new ParamDef("airPressure", "pressure", false, ["UserDefinedAirPressure"], [new GateDef("UseUserDefinedWeather", true)]),
+             new ParamDef("relativeHumidity", "dimensionless", false, ["UserDefinedRelativeHumidity"], [new GateDef("UseUserDefinedWeather", true)]),
+             P("diskArea", "area", false, "DiskArea"),
+             P("rotorDiameter", "length", false, "RotorDiameter"),
+             P("efficiency", "dimensionless", false, "Efficiency"),
+             P("numberOfUnits", "integer", false, "NumberOfTurbines")], false),
+
+        new UnitOpDef("solarPanel", "Solar Panel", ObjectType.SolarPanel,
+            [EnergyOut("Power Outlet", 0, required: true)],
+            [new ParamDef("solarIrradiation", "irradiance", false, ["SolarIrradiation_kW_m2"], [new GateDef("UseUserDefinedWeather", true)]),
+             P("panelArea", "area", false, "PanelArea"),
+             P("efficiency", "dimensionless", false, "PanelEfficiency"),
+             P("numberOfUnits", "integer", false, "NumberOfPanels")], false),
+
+        new UnitOpDef("hydroelectricTurbine", "Hydroelectric Turbine", ObjectType.HydroelectricTurbine,
+            [In("Water Inlet", 0), Out("Water Outlet", 0), EnergyOut("Power Outlet", 0, required: true)],
+            [P("efficiency", "dimensionless", false, "Efficiency"),
+             P("staticHead", "length", false, "StaticHead"),
+             P("velocityHead", "length", false, "VelocityHead"),
+             P("inletVelocity", "velocity", false, "InletVelocity"),
+             P("outletVelocity", "velocity", false, "OutletVelocity")], false),
+
+        new UnitOpDef("pemFuelCell", "PEM Fuel Cell", ObjectType.PEMFuelCell,
+            [In("Hydrogen-Rich Inlet", 0), In("Oxygen-Rich Inlet", 1), Out("Inerts Outlet", 0), EnergyOut("Power Outlet", 1, required: true)],
+            [], false),
+
+        new UnitOpDef("solidsSeparator", "Solids Separator", ObjectType.SolidSeparator,
+            [In("Inlet", 0), Out("Outlet 1", 0), Out("Outlet 2", 1)],
+            [P("separationEfficiency", "dimensionless", false, "SeparationEfficiency"),
+             P("liquidSeparationEfficiency", "dimensionless", false, "LiquidSeparationEfficiency")], false),
+
+        new UnitOpDef("filter", "Filter", ObjectType.Filter,
+            [In("Inlet", 0), Out("Filtrate", 0), Out("Retentate", 1)],
+            [P("pressureDrop", "pressure", false, "PressureDrop"),
+             P("totalFilterArea", "area", false, "TotalFilterArea"),
+             P("submergedAreaFraction", "dimensionless", false, "SubmergedAreaFraction"),
+             P("specificCakeResistance", "dimensionless", false, "SpecificCakeResistance"),
+             P("filterMediumResistance", "dimensionless", false, "FilterMediumResistance"),
+             P("filterCycleTime", "dimensionless", false, "FilterCycleTime"),
+             P("cakeRelativeHumidity", "dimensionless", false, "CakeRelativeHumidity")], false),
+
+        new UnitOpDef("absorptionColumn", "Absorption Column", ObjectType.AbsorptionColumn,
+            [In("Gas Feed", 0), In("Solvent Feed", 1), Out("Top Product", 0), Out("Bottoms Product", 1)],
+            [P("numberOfStages", "integer", true),
+             P("topPressure", "pressure", true),
+             P("bottomPressure", "pressure", true),
+             P("solvingMethod", "string", false),
+             P("maxIterations", "integer", false),
+             P("loopTolerance", "dimensionless", false)], false),
+
+        new UnitOpDef("reactorGibbsReaktoro", "Gibbs Reactor (Reaktoro)", ObjectType.RCT_GibbsReaktoro,
+            [In("Inlet", 0), Out("Outlet", 0), EnergyOut("Heat Outlet", 1)],
+            [], false),
     }.ToDictionary(d => d.Type, d => d, StringComparer.Ordinal);
 
     /// <summary>
