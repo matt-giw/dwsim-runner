@@ -482,6 +482,8 @@ internal static partial class Reader
         ["temperature"] = "K", ["temperatureDelta"] = "K", ["pressure"] = "Pa", ["power"] = "kW",
         ["massFlow"] = "kg/s", ["molarFlow"] = "mol/s", ["length"] = "m", ["area"] = "m2",
         ["volume"] = "m3", ["heatTransferCoefficient"] = "W/[m2.K]", ["voltage"] = "V",
+        // iskra 316 — the engine's own storage units, which for irradiance is kW/m2, not SI.
+        ["velocity"] = "m/s", ["irradiance"] = "kW/m2",
     };
 
     /// <summary>

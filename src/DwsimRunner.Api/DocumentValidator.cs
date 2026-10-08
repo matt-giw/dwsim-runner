@@ -107,6 +107,11 @@ public static class DocumentValidator
         // DWSIM's converter has no voltage family, so these are scaled by the worker
         // (`UnitOpCatalog.ConvertVoltage`), not by the engine. Keep the two lists identical.
         ["voltage"] = ["V", "kV", "mV"],
+        // iskra 316 — scaled by the worker, voltage's shape (`ConvertVelocity`, `ConvertIrradiance`):
+        // the engine stores irradiance in kW/m2, not SI, so the converter cannot be the authority.
+        // Keep each pair of lists identical.
+        ["velocity"] = ["m/s", "km/h", "ft/s"],
+        ["irradiance"] = ["kW/m2", "W/m2"],
         ["volume"] = ["m3", "L", "ft3"],
         ["length"] = ["m", "mm", "cm", "in", "ft"],
         ["dimensionless"] = [],

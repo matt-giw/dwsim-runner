@@ -134,11 +134,48 @@ static class Modes
         // answer — a legacy enum member with no factory path throws, and that is the fact worth
         // recording. Wrapped per type: one throwing member must not cost the other 72.
         var probe = auto.CreateFlowsheet();
+        // iskra 316 — the CONNECTORS of each buildable type, read off the constructed object. The
+        // ledger on the app side has carried "will-not-yet" rows for units nobody could describe the
+        // ports of, because the only way to see a port was to list the type in the catalog, rebuild and
+        // connect to it. Reported here so an unexposed unit's shape is a fact of the inventory, not a
+        // guess made when its catalog entry is written. An external op builds its ports in its own
+        // hook (`CreateConnectors`, the FlowsheetBuilder finding), so the hook is called before reading.
+        var connectors = new Dictionary<ObjectType, List<ConnectorOut>?>();
         bool CanBuild(ObjectType t)
         {
             if (probe is null) return instantiable.Contains(Key(t.ToString()));
-            try { return probe.AddObject(t, 50, 50, $"probe_{t}") is not null; }
+            try
+            {
+                var built = probe.AddObject(t, 50, 50, $"probe_{t}");
+                if (built is null) return false;
+                connectors[t] = ConnectorsOf(built);
+                return true;
+            }
             catch { return false; }
+        }
+        static List<ConnectorOut>? ConnectorsOf(object built)
+        {
+            try
+            {
+                if (built is DWSIM.Interfaces.IExternalUnitOperation ext)
+                    try { ext.CreateConnectors(); } catch { /* reported as whatever connectors exist */ }
+                if (built is not DWSIM.Interfaces.ISimulationObject so || so.GraphicObject is not { } go) return null;
+                var list = new List<ConnectorOut>();
+                for (var i = 0; i < go.InputConnectors.Count; i++)
+                {
+                    var cp = go.InputConnectors[i];
+                    list.Add(new ConnectorOut("in", i, cp.Type == DWSIM.Interfaces.Enums.GraphicObjects.ConType.ConEn ? "energy" : "material", cp.ConnectorName));
+                }
+                for (var i = 0; i < go.OutputConnectors.Count; i++)
+                {
+                    var cp = go.OutputConnectors[i];
+                    list.Add(new ConnectorOut("out", i, cp.Type == DWSIM.Interfaces.Enums.GraphicObjects.ConType.ConEn ? "energy" : "material", cp.ConnectorName));
+                }
+                if (go.EnergyConnector is { } ec)
+                    list.Add(new ConnectorOut("energy", -1, "energy", ec.ConnectorName));
+                return list;
+            }
+            catch { return null; }
         }
 
         // `ExposedAs` is `UnitOpCatalog.WireTypeFor` — the reverse of the allowlist, computed from it,
@@ -156,7 +193,8 @@ static class Modes
                         // Unparseable is a contradiction (the name came FROM the enum), so fall back
                         // to the palette rather than silently reporting false.
                         : instantiable.Contains(Key(name)),
-                    ExposedAs: parsed ? UnitOpCatalog.WireTypeFor(ot) : null);
+                    ExposedAs: parsed ? UnitOpCatalog.WireTypeFor(ot) : null,
+                    Connectors: parsed && connectors.TryGetValue(ot, out var cs) ? cs : null);
             })
             .ToList();
 
@@ -167,7 +205,7 @@ static class Modes
         // is to be the authority on what exists.
         var known = new HashSet<string>(entries.Select(e => Key(e.Name)), StringComparer.OrdinalIgnoreCase);
         entries.AddRange(externals.Where(n => !known.Contains(Key(n)))
-            .Select(n => new EngineInventoryEntry(n, Humanize(n), "external", true, null)));
+            .Select(n => new EngineInventoryEntry(n, Humanize(n), "external", true, null, null)));
 
         return entries.OrderBy(e => e.Name, StringComparer.Ordinal).ToList();
     }
@@ -959,7 +997,11 @@ record SolidValueOut(string Key, string Unit);
 /// One unit-op kind the engine declares. `ExposedAs` is null when this runner has no wire type for it
 /// — which is the whole point of the record: an absent capability that says so (099 FR-004).
 record EngineInventoryEntry(string Name, string DisplayName, string Source, bool Instantiable,
-    string? ExposedAs);
+    string? ExposedAs, List<ConnectorOut>? Connectors);
+/// iskra 316 — one connector of a constructed unit op: `Side` is "in"/"out" (or "energy" for the
+/// dedicated energy connector some objects carry, `Index` -1), `Index` is the slot a catalog `PortDef`
+/// would name, `Kind` is material/energy.
+record ConnectorOut(string Side, int Index, string Kind, string? Name);
 record CompoundOut(string Name, string? Formula, string? CasNumber);
 record PropertyPackageOut(string Id, string Name, string Description);
 
