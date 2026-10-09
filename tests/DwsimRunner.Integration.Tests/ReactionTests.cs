@@ -348,4 +348,91 @@ public class ReactionTests
             $"Gibbs reactor did not converge: {r.GetProperty("warnings")}");
         Assert.Equal("reactorGibbs", ReportedType(r, "R-1"));
     }
+
+    // iskra 323 (ISK-630): the SAME reforming feed stated as a MASS flow — which is what iskra
+    // sends for every feed — failed at build with "cannot create Gibbs element matrix: Nullable
+    // object must have a value". `CreateElementMatrix` reads each inlet compound's `MolarFlow.Value`,
+    // and a mass-flow spec leaves those null until the stream is calculated. 1752.2 kg/h is
+    // 100 kmol/h of 25 % CH4 / 75 % H2O; the mass-basis fractions are the same mixture.
+    [SkippableTheory]
+    [InlineData("molar", 0.25, 0.75)]
+    [InlineData("mass", 0.22888, 0.77112)]
+    public async Task Gibbs_reactor_solves_a_mass_flow_feed(string basis, double methane, double water)
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var doc = GibbsDoc
+            .Replace("\"molarFlow\": { \"value\": 100, \"unit\": \"kmol/h\" }", "\"massFlow\": { \"value\": 1752.2, \"unit\": \"kg/h\" }")
+            .Replace("\"basis\": \"molar\"", $"\"basis\": \"{basis}\"")
+            .Replace("\"Methane\": 0.25, \"Water\": 0.75", $"\"Methane\": {methane.ToString(inv)}, \"Water\": {water.ToString(inv)}");
+        Assert.Contains("massFlow", doc);
+
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve",
+            BuildSolveTests.BuildSolveBody(doc, timeoutSeconds: 180));
+
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, body);
+        var r = JsonSerializer.Deserialize<JsonElement>(body);
+        Assert.True(r.GetProperty("converged").GetBoolean(), $"did not converge: {r.GetProperty("warnings")}");
+        // No mode stated → the declared default, isothermic: the outlet stays at 850 C. Measured with
+        // an explicit `isothermic`: OUT_V 142.14 kmol/h, H2 0.500, duty 1255 kW. (Before iskra 323 an
+        // unstated mode left DWSIM's Gibbs default in force — ADIABATIC, 635 C, H2 0.189 — while the
+        // catalog advertised isothermic.)
+        var outV = r.GetProperty("streams").EnumerateArray().Single(s => s.GetProperty("name").GetString() == "OUT_V");
+        Assert.InRange(outV.GetProperty("temperatureC").GetDouble(), 849.5, 850.5);
+        Assert.InRange(outV.GetProperty("molarFlowKmolH").GetDouble(), 140.7, 143.6);
+        Assert.InRange(outV.GetProperty("compositionMol").GetProperty("Hydrogen").GetDouble(), 0.495, 0.505);
+    }
+
+    // iskra 323: in outletTemperature mode `Calculate_GibbsMin` dereferences the energy stream on
+    // `Energy Inlet` and threw NullReferenceException when none was connected — and iskra connects
+    // one only when the engineer draws it. The runner now attaches a synthesized duty stream, hidden
+    // from the result like the electrolyzer's power stream; the duty is still reported on the unit.
+    [SkippableFact]
+    public async Task Gibbs_reactor_at_an_outlet_temperature_needs_no_drawn_energy_stream()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+        const string doc = """
+        {
+          "schemaVersion": 1,
+          "name": "gibbs reactor at an outlet temperature, no energy stream",
+          "compounds": ["Methane", "Water", "Carbon monoxide", "Carbon dioxide", "Hydrogen"],
+          "propertyPackage": "PR",
+          "objects": [
+            { "tag": "FEED", "kind": "materialStream",
+              "spec": { "temperature": { "value": 850, "unit": "C" },
+                        "pressure": { "value": 20, "unit": "bar" },
+                        "massFlow": { "value": 1752.2, "unit": "kg/h" },
+                        "composition": { "basis": "molar",
+                                         "fractions": { "Methane": 0.25, "Water": 0.75 } } } },
+            { "tag": "R-1", "kind": "unitOp", "type": "reactorGibbs",
+              "parameters": { "calcMode": "outletTemperature", "outletTemperature": { "value": 750, "unit": "C" } } },
+            { "tag": "OUT_V", "kind": "materialStream" },
+            { "tag": "OUT_L", "kind": "materialStream" }
+          ],
+          "connections": [
+            { "from": "FEED", "to": "R-1", "port": "Inlet" },
+            { "from": "R-1", "to": "OUT_V", "port": "Vapor Outlet" },
+            { "from": "R-1", "to": "OUT_L", "port": "Liquid Outlet" }
+          ]
+        }
+        """;
+
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve",
+            BuildSolveTests.BuildSolveBody(doc, timeoutSeconds: 180));
+
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, body);
+        var r = JsonSerializer.Deserialize<JsonElement>(body);
+        Assert.True(r.GetProperty("converged").GetBoolean(), $"did not converge: {r.GetProperty("warnings")}");
+        var outV = r.GetProperty("streams").EnumerateArray().Single(s => s.GetProperty("name").GetString() == "OUT_V");
+        Assert.InRange(outV.GetProperty("temperatureC").GetDouble(), 749.5, 750.5);
+        // Reforming is endothermic: 100 K below the feed, less hydrogen than isothermal 850 C (0.500),
+        // and the value fits the published SMR equilibrium at 1023 K (Kp ≈ 49 atm², measured 47.6).
+        var h2 = outV.GetProperty("compositionMol").GetProperty("Hydrogen").GetDouble();
+        Assert.InRange(h2, 0.40, 0.43);
+        Assert.Empty(r.GetProperty("energy").EnumerateArray());
+        var unit = r.GetProperty("unitOps").EnumerateArray().Single(u => u.GetProperty("name").GetString() == "R-1");
+        Assert.Equal(JsonValueKind.Number, unit.GetProperty("dutyKw").ValueKind);
+    }
 }
