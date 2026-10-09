@@ -384,6 +384,73 @@ public class ReactionTests
         Assert.InRange(outV.GetProperty("compositionMol").GetProperty("Hydrogen").GetDouble(), 0.495, 0.505);
     }
 
+    // iskra 323 review: the usual reformer layout — a heater feeding the Gibbs reactor. The reactor's
+    // inlet is then an INTERMEDIATE stream with no flows at build time, which the direct-feed tests
+    // above never exercise.
+    [SkippableFact]
+    public async Task Gibbs_reactor_fed_by_a_heater_solves()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+        const string doc = """
+        {
+          "schemaVersion": 1,
+          "name": "heater then gibbs",
+          "compounds": ["Methane", "Water", "Carbon monoxide", "Carbon dioxide", "Hydrogen"],
+          "propertyPackage": "PR",
+          "objects": [
+            { "tag": "FEED", "kind": "materialStream",
+              "spec": { "temperature": { "value": 400, "unit": "C" },
+                        "pressure": { "value": 20, "unit": "bar" },
+                        "massFlow": { "value": 1752.2, "unit": "kg/h" },
+                        "composition": { "basis": "molar",
+                                         "fractions": { "Methane": 0.25, "Water": 0.75 } } } },
+            { "tag": "H-1", "kind": "unitOp", "type": "heater",
+              "parameters": { "outletTemperature": { "value": 850, "unit": "C" } } },
+            { "tag": "HOT", "kind": "materialStream" },
+            { "tag": "R-1", "kind": "unitOp", "type": "reactorGibbs" },
+            { "tag": "OUT_V", "kind": "materialStream" },
+            { "tag": "OUT_L", "kind": "materialStream" }
+          ],
+          "connections": [
+            { "from": "FEED", "to": "H-1", "port": "Inlet" },
+            { "from": "H-1", "to": "HOT", "port": "Outlet" },
+            { "from": "HOT", "to": "R-1", "port": "Inlet" },
+            { "from": "R-1", "to": "OUT_V", "port": "Vapor Outlet" },
+            { "from": "R-1", "to": "OUT_L", "port": "Liquid Outlet" }
+          ]
+        }
+        """;
+
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve",
+            BuildSolveTests.BuildSolveBody(doc, timeoutSeconds: 180));
+
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, body);
+        var r = JsonSerializer.Deserialize<JsonElement>(body);
+        Assert.True(r.GetProperty("converged").GetBoolean(), $"did not converge: {r.GetProperty("warnings")}");
+        var outV = r.GetProperty("streams").EnumerateArray().Single(s => s.GetProperty("name").GetString() == "OUT_V");
+        // Same mixture and state as the direct 850 C feed: the same isothermal equilibrium.
+        Assert.InRange(outV.GetProperty("compositionMol").GetProperty("Hydrogen").GetDouble(), 0.495, 0.505);
+    }
+
+    // iskra 323 review: the synthesized duty stream is hidden by WHICH object it is, not by its name.
+    // An engineer's own duty line called "R-1-DUTY" is a natural name and must still be reported.
+    [SkippableFact]
+    public async Task An_authored_duty_line_named_like_the_synthesized_one_is_still_reported()
+    {
+        Skip.IfNot(RunnerConnection.Available, RunnerConnection.SkipReason);
+        var doc = GibbsDoc.Replace("Q-RX", "R-1-DUTY");
+        Assert.Contains("R-1-DUTY", doc);
+
+        var resp = await RunnerConnection.Client.PostAsync("/flowsheets/build-solve",
+            BuildSolveTests.BuildSolveBody(doc, timeoutSeconds: 180));
+
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.True(resp.StatusCode == HttpStatusCode.OK, body);
+        var r = JsonSerializer.Deserialize<JsonElement>(body);
+        Assert.Contains(r.GetProperty("energy").EnumerateArray(), e => e.GetProperty("name").GetString() == "R-1-DUTY");
+    }
+
     // iskra 323: in outletTemperature mode `Calculate_GibbsMin` dereferences the energy stream on
     // `Energy Inlet` and threw NullReferenceException when none was connected — and iskra connects
     // one only when the engineer draws it. The runner now attaches a synthesized duty stream, hidden

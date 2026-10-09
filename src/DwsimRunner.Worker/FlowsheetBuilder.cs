@@ -367,7 +367,6 @@ public static class FlowsheetBuilder
                 foreach (var compoundName in fs.SelectedCompounds.Keys)
                     gr.ComponentIDs.Add(compoundName);
                 SeedInletMolarFlows(gr);
-                AttachDutyIfUnwired(fs, gr);
                 gr.CreateElementMatrix();
                 // Second GUI-only default, found one layer under the first: with
                 // InitializeFromPreviousSolution true (and no previous solution to read),
@@ -386,9 +385,9 @@ public static class FlowsheetBuilder
         }
 
         // ── unit-op parameters ─────────────────────────────────────────────
-        // 323 — a unit with no parameters still gets its declared default mode written.
+        // 323 — a Gibbs reactor with no parameters still gets its default mode written.
         foreach (var o in doc.Objects.Where(o => o.Kind == "unitOp" &&
-                     (o.Parameters is { Count: > 0 } || UnitOpCatalog.Types[o.Type!].CalcMode is not null)))
+                     (o.Parameters is { Count: > 0 } || o.Type == "reactorGibbs")))
         {
             if (!byTag.TryGetValue(o.Tag, out var so)) continue;
             var def = UnitOpCatalog.Types[o.Type!];
@@ -459,6 +458,10 @@ public static class FlowsheetBuilder
                 try { ColumnConfigurator.Finish(so, o); }
                 catch (Exception ex) { Error("INVALID_PARAMETER_VALUE", o.Tag, $"column pressure profile on '{o.Tag}': {ex.Message}"); }
         }
+
+        // 323 — after the modes are written: the duty stream only where the mode computes the duty.
+        foreach (var gr in byTag.Values.OfType<DWSIM.UnitOperations.Reactors.Reactor_Gibbs>())
+            AttachDutyIfUnwired(fs, gr);
 
         // ── reactions ──────────────────────────────────────────────────────
         BuildReactions(fs, doc, byTag, Error);
@@ -546,11 +549,13 @@ public static class FlowsheetBuilder
                 }
         }
 
-        // iskra 323 — nothing stated and nothing to infer: the DECLARED default, written. Until now
-        // the engine's own default stayed in force, and the catalog advertised a default it did not
-        // apply: a Gibbs reactor declared `isothermic` and ran ADIABATIC (850 C feed → 635 C outlet,
-        // zero duty, H2 0.189 instead of the isothermal 0.500), converged and silent.
-        wire ??= cm.Default;
+        // iskra 323 — a Gibbs reactor with nothing stated gets its DECLARED default written; left to
+        // the engine it ran adiabatic while the catalog said isothermic. Gibbs only, on purpose: every
+        // DWSIM reactor defaults to adiabatic (reference/dwsim_unitop_reference.csv), so widening this
+        // would silently re-answer every saved conversion and equilibrium reactor — that is its own
+        // decision, measured on its own.
+        if (wire is null && def.Type == "reactorGibbs") wire = cm.Default;
+        if (wire is null) return (null, false);
         if (!cm.TryResolve(wire, out var member)) return (null, false);
 
         var prop = so.GetType().GetProperty(cm.ClrProperty);
@@ -787,17 +792,24 @@ public static class FlowsheetBuilder
     // iskra 323: in outletTemperature mode `Calculate_GibbsMin` dereferences the energy stream on
     // `Energy Inlet` (input connector 1) — NullReferenceException with none attached, measured. iskra
     // sends one only when the engineer draws a duty line. A duty stream invents nothing (it is the
-    // number the engine computes), so attach one, namespaced and hidden from the harvest like the
-    // electrolyzer's power stream; the duty is still reported on the unit (`DeltaQ`).
-    public const string DutySuffix = "-DUTY";
-    public static bool IsSynthesizedDuty(string? tag) => tag is not null && tag.EndsWith(DutySuffix, StringComparison.Ordinal);
+    // number the engine computes), so attach one and hide it from the harvest; the duty is still
+    // reported on the unit (`DeltaQ`). Hidden by the engine object's NAME (a GUID), not its tag: the
+    // document allows any tag, so a suffix match would also hide an engineer's own "E-101-DUTY".
+    // One job per worker process, so a process-wide set is the job's set.
+    private static readonly HashSet<string> SynthesizedDuty = [];
+    public static bool IsSynthesizedDuty(string name) => SynthesizedDuty.Contains(name);
 
     private static void AttachDutyIfUnwired(IFlowsheet fs, DWSIM.UnitOperations.Reactors.Reactor_Gibbs gr)
     {
+        // Only where the engine COMPUTES the duty. In nonIsothermalNonAdiabatic it READS the heat off
+        // this stream, and a hidden stream nobody can set would turn a loud failure into a silent zero.
+        if (gr.ReactorOperationMode is not (DWSIM.UnitOperations.Reactors.OperationMode.Isothermic
+            or DWSIM.UnitOperations.Reactors.OperationMode.OutletTemperature)) return;
         var connectors = gr.GraphicObject?.InputConnectors;
         if (connectors is null || connectors.Count < 2 || connectors[1].IsAttached) return;
-        var es = fs.AddObject(ObjectType.EnergyStream, 50, 50, gr.GraphicObject!.Tag + DutySuffix);
+        var es = fs.AddObject(ObjectType.EnergyStream, 50, 50, gr.GraphicObject!.Tag + " duty");
         fs.ConnectObjects(es.GraphicObject, gr.GraphicObject, 0, 1);
+        SynthesizedDuty.Add(es.Name);
     }
 
     // 141 FR-001: a parameter the runner cannot bind is a typed, per-parameter build failure —
