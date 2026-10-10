@@ -386,6 +386,7 @@ static class Modes
                     // reporting it would have the app fold back a stream its own side does not
                     // contain.
                     if (ElectrolyzerConfigurator.IsSynthesizedPower(es.GraphicObject.Tag)) break;
+                    if (FlowsheetBuilder.IsSynthesizedDuty(es.Name)) break;   // iskra 323
                     energy.Add(new EnergyRow(es.GraphicObject.Tag,
                         // DWSIM SI energy flow is already kW
                         EnergyFlowKw(es.EnergyFlow)));
